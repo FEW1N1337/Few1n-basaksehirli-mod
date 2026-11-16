@@ -5,28 +5,62 @@ on:
     branches: [ "main", "master" ]
   workflow_dispatch:
 
+permissions:
+  contents: write
+
+concurrency:
+  group: ios-build-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   build:
-    runs-on: macos-latest
+    name: Build FEW1N Basaksehirli Tweak
+    runs-on: macos-15
+    timeout-minutes: 20
+
+    env:
+      THEOS: ${{ github.workspace }}/theos
 
     steps:
       - name: Checkout Repository
         uses: actions/checkout@v4
 
-      - name: Install Theos
-        run: |
-          git clone --recursive https://github.com/theos/theos.git ~/theos
-          echo "THEOS=~/theos" >> $GITHUB_ENV
+      - name: Cache Theos
+        id: cache-theos
+        uses: actions/cache@v4
+        with:
+          path: ${{ env.THEOS }}
+          key: theos-macos15-v2
 
-      - name: Download iOS SDK
+      - name: Setup Theos
+        shell: bash
         run: |
-          git clone --quiet https://github.com/theos/sdks.git ~/theos/sdks
+          set -euo pipefail
+          if [ ! -f "$THEOS/makefiles/common.mk" ]; then
+            echo "Installing Theos..."
+            rm -rf "$THEOS"
+            git clone --depth 1 --recursive https://github.com/theos/theos.git "$THEOS"
+          fi
+          echo "THEOS=$THEOS" >> "$GITHUB_ENV"
 
-      - name: Build Tweak (.dylib)
+      - name: Setup iOS SDK
+        shell: bash
         run: |
+          set -euo pipefail
+          mkdir -p "$THEOS/sdks"
+          if ! find "$THEOS/sdks" -maxdepth 1 -name '*.sdk' -print -quit | grep -q .; then
+            echo "Downloading SDKs..."
+            git clone --depth 1 https://github.com/theos/sdks.git "$RUNNER_TEMP/theos-sdks"
+            find "$RUNNER_TEMP/theos-sdks" -maxdepth 1 -name '*.sdk' -exec cp -R {} "$THEOS/sdks/" \;
+          fi
+
+      - name: Build Tweak
+        shell: bash
+        run: |
+          set -euo pipefail
           make package FINALPACKAGE=1
 
-      - name: Upload Built Dylib & Deb Artifacts
+      - name: Upload Artifacts
         uses: actions/upload-artifact@v4
         with:
           name: FEW1NBasaksehirli-Dylib
