@@ -2,6 +2,23 @@
 #import <Foundation/Foundation.h>
 #import <objc/runtime.h>
 
+// Forward interface declarations to satisfy Clang type checks
+@interface _TtC12basaksehirli17SideMenuViewModel : NSObject
+@end
+
+@interface _TtC12basaksehirli14PayBalanceView : UIView
+@end
+
+@interface _TtC12basaksehirli15PayAlertManager : NSObject
+@end
+
+@interface _TtC12basaksehirli17PayViewController : UIViewController
+- (void)paymentSuccessful;
+@end
+
+@interface _TtC12basaksehirli23VideoDutyViewController : UIViewController
+@end
+
 // ============================================================================
 // FEW1N Başakşehirli Mod - Floating UI & In-App Network Inspector
 // ============================================================================
@@ -91,7 +108,8 @@ static void FEW1NLog(NSString *text) {
 
 - (void)layoutSubviews {
     %orig;
-    for (UIView *sub in self.subviews) {
+    UIView *selfView = (UIView *)self;
+    for (UIView *sub in selfView.subviews) {
         if ([sub isKindOfClass:[UILabel class]]) {
             UILabel *lbl = (UILabel *)sub;
             if ([lbl.text containsString:@"₺"] || [lbl.text containsString:@"0,00"]) {
@@ -128,14 +146,13 @@ static void FEW1NLog(NSString *text) {
 - (void)paymentModalPaymentButtonTapped {
     FEW1NLog(@"🎯 paymentModalPaymentButtonTapped tetiklendi! Doğrudan Payment Successful akışına yönlendiriliyor.");
     
-    // Doğrudan uygulamanın kendi Payment Successful fonksiyonu tetiklenir
-    if ([self respondsToSelector:@selector(paymentSuccessful)]) {
-        [self performSelector:@selector(paymentSuccessful)];
+    id target = (id)self;
+    if ([target respondsToSelector:@selector(paymentSuccessful)]) {
+        [target performSelector:@selector(paymentSuccessful)];
     } else {
-        // Alternatif selector denemeleri
         SEL sel = NSSelectorFromString(@"paymentSuccessful");
-        if ([self respondsToSelector:sel]) {
-            [self performSelector:sel];
+        if ([target respondsToSelector:sel]) {
+            [target performSelector:sel];
         } else {
             %orig;
         }
