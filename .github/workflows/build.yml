@@ -15,58 +15,59 @@ concurrency:
 jobs:
   build:
     name: Build FEW1N Basaksehirli Tweak
-    runs-on: macos-latest
-    timeout-minutes: 20
-
-    env:
-      THEOS: ${{ github.workspace }}/theos
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
 
     steps:
       - name: Checkout Repository
         uses: actions/checkout@v4
 
-      - name: Cache Theos
-        id: cache-theos
+      - name: Cache iOS SDK
         uses: actions/cache@v4
         with:
-          path: ${{ env.THEOS }}
-          key: theos-macos-latest-v2
+          path: ${{ github.workspace }}/sdks
+          key: ios-sdks-ubuntu-v1
 
-      - name: Setup Theos
+      - name: Setup iOS SDK & Tools
         shell: bash
         run: |
           set -euo pipefail
-          if [ ! -f "$THEOS/makefiles/common.mk" ]; then
-            echo "Installing Theos..."
-            rm -rf "$THEOS"
-            git clone --depth 1 --recursive https://github.com/theos/theos.git "$THEOS"
+          if ! command -v ld64.lld >/dev/null 2>&1; then
+            sudo apt-get update && sudo apt-get install -y clang lld
           fi
-          echo "THEOS=$THEOS" >> "$GITHUB_ENV"
-
-      - name: Setup iOS SDK
-        shell: bash
-        run: |
-          set -euo pipefail
-          mkdir -p "$THEOS/sdks"
-          if ! find "$THEOS/sdks" -maxdepth 1 -name '*.sdk' -print -quit | grep -q .; then
-            echo "Downloading SDKs..."
+          if [ ! -d "${{ github.workspace }}/sdks" ] || [ -z "$(ls -A "${{ github.workspace }}/sdks" 2>/dev/null || true)" ]; then
             git clone --depth 1 https://github.com/theos/sdks.git "$RUNNER_TEMP/theos-sdks"
-            find "$RUNNER_TEMP/theos-sdks" -maxdepth 1 -name '*.sdk' -exec cp -R {} "$THEOS/sdks/" \;
+            mkdir -p "${{ github.workspace }}/sdks"
+            cp -R "$RUNNER_TEMP/theos-sdks"/iPhoneOS*.sdk "${{ github.workspace }}/sdks/"
           fi
+          curl -fsSL https://github.com/ProcursusTeam/ldid/releases/latest/download/ldid_linux_x86_64 -o /tmp/ldid
+          chmod +x /tmp/ldid
 
-      - name: Build Tweak
+      - name: Build Tweak (.dylib)
         shell: bash
         run: |
           set -euo pipefail
-          rm -rf .theos FEW1NBasaksehirli.dylib
-          make FINALPACKAGE=1 TARGET_CODESIGN=""
-          BUILT=$(find .theos/obj -name "FEW1NBasaksehirli.dylib" -type f ! -path "*.dSYM*" | head -n 1)
-          echo "Built dylib: $BUILT"
-          test -n "$BUILT"
-          cp "$BUILT" ./FEW1NBasaksehirli.dylib
-          /usr/bin/codesign -f -s - ./FEW1NBasaksehirli.dylib
+          SDK=$(ls -d "${{ github.workspace }}/sdks"/iPhoneOS*.sdk | sort -V | tail -n 1)
+          echo "Using SDK: $SDK"
+          clang -target arm64-apple-ios14.0 \
+            -isysroot "$SDK" \
+            -fuse-ld=lld \
+            -dynamiclib \
+            -fobjc-arc \
+            -O2 \
+            -Wno-deprecated-declarations \
+            -Wno-unused-variable \
+            -Wno-unused-function \
+            -F"$SDK/System/Library/Frameworks" \
+            -framework UIKit \
+            -framework Foundation \
+            -framework CoreGraphics \
+            -framework QuartzCore \
+            -install_name @rpath/FEW1NBasaksehirli.dylib \
+            FEW1NBasaksehirli.m \
+            -o FEW1NBasaksehirli.dylib
+          /tmp/ldid -S FEW1NBasaksehirli.dylib
           file ./FEW1NBasaksehirli.dylib
-          file ./FEW1NBasaksehirli.dylib | grep -q "dynamically linked shared library"
           ls -lh ./FEW1NBasaksehirli.dylib
 
       - name: Upload Artifacts
