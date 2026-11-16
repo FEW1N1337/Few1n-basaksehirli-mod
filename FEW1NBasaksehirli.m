@@ -32,7 +32,7 @@ static id HeadersLock(void) {
 // Helpers: Window & Logging
 // ----------------------------------------------------------------------------
 static UIWindow *GetKeyWindow(void) {
-    if (@available(iOS 15.0, *)) {
+    if ([[UIApplication sharedApplication] respondsToSelector:@selector(connectedScenes)]) {
         for (UIScene *scene in [UIApplication sharedApplication].connectedScenes) {
             if (scene.activationState == UISceneActivationStateForegroundActive &&
                 [scene isKindOfClass:[UIWindowScene class]]) {
