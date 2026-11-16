@@ -2,10 +2,15 @@
 #import <Foundation/Foundation.h>
 #import <objc/runtime.h>
 #import <objc/message.h>
+#import <mach-o/dyld.h>
+#import <dlfcn.h>
 
 // ============================================================================
-// FEW1N Başakşehirli Mod - PURE Objective-C (Zero Dependencies / Sideload Safe)
-// No CydiaSubstrate needed! Guaranteed NO dyld crash on stock/non-jailbreak iOS!
+// FEW1N Başakşehirli Mod v1.0.2 - PURE Objective-C (Zero Dependencies / Sideload Safe)
+// - Alamofire & NSURLSession HTTP/HTTPS Inspector
+// - PayPaymentModalView paymentButtonTapped -> Direct Local Payment Successful UI
+// - Insufficient Balance / General Error Alert Suppressor
+// - VideoDuty Instant Completion & SideMenu Visibility
 // ============================================================================
 
 static UIButton *floatingBtn = nil;
@@ -13,74 +18,252 @@ static UIView *menuView = nil;
 static UITextView *networkLogView = nil;
 static NSMutableArray *capturedLogs = nil;
 
-static void FEW1NLog(NSString *text) {
-    if (!capturedLogs) {
-        capturedLogs = [NSMutableArray new];
+// ----------------------------------------------------------------------------
+// Helpers: Window & Logging
+// ----------------------------------------------------------------------------
+static UIWindow *GetKeyWindow(void) {
+    if (@available(iOS 15.0, *)) {
+        for (UIScene *scene in [UIApplication sharedApplication].connectedScenes) {
+            if (scene.activationState == UISceneActivationStateForegroundActive &&
+                [scene isKindOfClass:[UIWindowScene class]]) {
+                UIWindowScene *ws = (UIWindowScene *)scene;
+                for (UIWindow *w in ws.windows) {
+                    if (w.isKeyWindow) return w;
+                }
+                if (ws.windows.count > 0) return ws.windows.firstObject;
+            }
+        }
     }
+    for (UIWindow *w in [UIApplication sharedApplication].windows) {
+        if (w.isKeyWindow) return w;
+    }
+    return [UIApplication sharedApplication].windows.firstObject;
+}
+
+static void FEW1NLog(NSString *text) {
+    if (!text) return;
     NSString *timestamp = [NSDateFormatter localizedStringFromDate:[NSDate date]
                                                          dateStyle:NSDateFormatterNoStyle
                                                          timeStyle:NSDateFormatterMediumStyle];
     NSString *entry = [NSString stringWithFormat:@"[%@] %@", timestamp, text];
-    [capturedLogs insertObject:entry atIndex:0];
-    if (capturedLogs.count > 100) {
-        [capturedLogs removeLastObject];
-    }
-    if (networkLogView) {
-        dispatch_async(dispatch_get_main_queue(), ^{
+    dispatch_async(dispatch_get_main_queue(), ^{
+        if (!capturedLogs) {
+            capturedLogs = [NSMutableArray new];
+        }
+        [capturedLogs insertObject:entry atIndex:0];
+        if (capturedLogs.count > 120) {
+            [capturedLogs removeLastObject];
+        }
+        if (networkLogView) {
             networkLogView.text = [capturedLogs componentsJoinedByString:@"\n--------------------\n"];
-        });
-    }
+        }
+    });
 }
 
 // ----------------------------------------------------------------------------
-// Swizzling Helper
+// Safe Swizzling Helpers (Safe for Superclass-Inherited Methods)
 // ----------------------------------------------------------------------------
 static void SwizzleInstanceMethod(Class cls, SEL origSel, SEL newSel, IMP newImp, const char *types) {
     if (!cls) return;
-    class_addMethod(cls, newSel, newImp, types);
     Method origMethod = class_getInstanceMethod(cls, origSel);
-    Method newMethod = class_getInstanceMethod(cls, newSel);
-    if (origMethod && newMethod) {
-        method_exchangeImplementations(origMethod, newMethod);
-    }
+    if (!origMethod) return;
+    IMP origImp = method_getImplementation(origMethod);
+    if (origImp == newImp) return;
+    const char *origTypes = method_getTypeEncoding(origMethod) ?: types;
+    class_addMethod(cls, newSel, origImp, origTypes);
+    class_replaceMethod(cls, origSel, newImp, origTypes);
 }
 
 static void SwizzleClassMethod(Class cls, SEL origSel, SEL newSel, IMP newImp, const char *types) {
     if (!cls) return;
     Class metaCls = object_getClass((id)cls);
-    class_addMethod(metaCls, newSel, newImp, types);
     Method origMethod = class_getClassMethod(cls, origSel);
-    Method newMethod = class_getClassMethod(cls, newSel);
-    if (origMethod && newMethod) {
-        method_exchangeImplementations(origMethod, newMethod);
+    if (!origMethod) return;
+    IMP origImp = method_getImplementation(origMethod);
+    if (origImp == newImp) return;
+    const char *origTypes = method_getTypeEncoding(origMethod) ?: types;
+    class_addMethod(metaCls, newSel, origImp, origTypes);
+    class_replaceMethod(metaCls, origSel, newImp, origTypes);
+}
+
+// ----------------------------------------------------------------------------
+// Helpers: Find Main Binary Base & Active PayViewController & Trigger UI
+// ----------------------------------------------------------------------------
+static uintptr_t GetBasaksehirliBaseAddress(void) {
+    uint32_t count = _dyld_image_count();
+    for (uint32_t i = 0; i < count; i++) {
+        const char *name = _dyld_get_image_name(i);
+        if (name && strstr(name, "/basaksehirli.app/basaksehirli")) {
+            return (uintptr_t)_dyld_get_image_header(i);
+        }
+    }
+    return (uintptr_t)_dyld_get_image_header(0);
+}
+
+static UIViewController *FindViewControllerOfClass(UIViewController *vc, Class targetCls) {
+    if (!vc || !targetCls) return nil;
+    if ([vc isKindOfClass:targetCls]) return vc;
+
+    if (vc.presentedViewController) {
+        UIViewController *found = FindViewControllerOfClass(vc.presentedViewController, targetCls);
+        if (found) return found;
+    }
+    if ([vc isKindOfClass:[UINavigationController class]]) {
+        UINavigationController *nav = (UINavigationController *)vc;
+        for (UIViewController *child in [nav.viewControllers reverseObjectEnumerator]) {
+            UIViewController *found = FindViewControllerOfClass(child, targetCls);
+            if (found) return found;
+        }
+    }
+    if ([vc isKindOfClass:[UITabBarController class]]) {
+        UITabBarController *tab = (UITabBarController *)vc;
+        if (tab.selectedViewController) {
+            UIViewController *found = FindViewControllerOfClass(tab.selectedViewController, targetCls);
+            if (found) return found;
+        }
+        for (UIViewController *child in tab.viewControllers) {
+            UIViewController *found = FindViewControllerOfClass(child, targetCls);
+            if (found) return found;
+        }
+    }
+    for (UIViewController *child in vc.childViewControllers) {
+        UIViewController *found = FindViewControllerOfClass(child, targetCls);
+        if (found) return found;
+    }
+    return nil;
+}
+
+static UIViewController *FindActivePayViewController(UIView *anchorView) {
+    Class payCls = NSClassFromString(@"_TtC12basaksehirli17PayViewController");
+    if (!payCls) return nil;
+
+    // 1. Check responder chain starting from anchorView (e.g. PayPaymentModalView)
+    UIResponder *responder = anchorView;
+    while (responder) {
+        if ([responder isKindOfClass:payCls]) {
+            return (UIViewController *)responder;
+        }
+        responder = responder.nextResponder;
+    }
+
+    // 2. Walk keyWindow view controller hierarchy
+    UIWindow *kw = GetKeyWindow();
+    if (kw && kw.rootViewController) {
+        UIViewController *found = FindViewControllerOfClass(kw.rootViewController, payCls);
+        if (found) return found;
+    }
+
+    // 3. Fallback across all app windows
+    for (UIWindow *w in [UIApplication sharedApplication].windows) {
+        if (w.rootViewController) {
+            UIViewController *found = FindViewControllerOfClass(w.rootViewController, payCls);
+            if (found) return found;
+        }
+    }
+    return nil;
+}
+
+static UIViewController *TopMostViewController(void) {
+    UIViewController *top = GetKeyWindow().rootViewController;
+    while (top.presentedViewController) {
+        top = top.presentedViewController;
+    }
+    return top;
+}
+
+typedef void *(*SwiftAllocObjectFn)(void *, size_t, size_t);
+typedef void (*SwiftWeakInitFn)(void *, void *);
+
+static BOOL TriggerLocalPaymentSuccessUI(UIViewController *payVC) {
+    if (!payVC) return NO;
+    uintptr_t base = GetBasaksehirliBaseAddress();
+    if (!base) return NO;
+
+    SwiftAllocObjectFn allocObj = (SwiftAllocObjectFn)dlsym(RTLD_DEFAULT, "swift_allocObject");
+    SwiftWeakInitFn weakInit = (SwiftWeakInitFn)dlsym(RTLD_DEFAULT, "swift_weakInit");
+    if (!allocObj || !weakInit) {
+        void *swiftCore = dlopen("/usr/lib/swift/libswiftCore.dylib", RTLD_LAZY);
+        if (swiftCore) {
+            if (!allocObj) allocObj = (SwiftAllocObjectFn)dlsym(swiftCore, "swift_allocObject");
+            if (!weakInit) weakInit = (SwiftWeakInitFn)dlsym(swiftCore, "swift_weakInit");
+        }
+    }
+
+    if (!allocObj || !weakInit) {
+        FEW1NLog(@"❌ swift_allocObject veya swift_weakInit bulunamadı.");
+        return NO;
+    }
+
+    void *box = allocObj((void *)(base + 0xd5a8c0), 0x18, 7);
+    if (!box) return NO;
+    weakInit((void *)((uintptr_t)box + 0x10), (__bridge void *)payVC);
+
+    void (*paymentSuccessFn)(void *) = (void (*)(void *))(base + 0xf2300);
+    dispatch_async(dispatch_get_main_queue(), ^{
+        paymentSuccessFn(box);
+    });
+    return YES;
+}
+
+static void EnableAllButtonsRecursively(UIView *view) {
+    if (!view) return;
+    if ([view isKindOfClass:[UIButton class]]) {
+        UIButton *btn = (UIButton *)view;
+        btn.enabled = YES;
+        btn.userInteractionEnabled = YES;
+        btn.alpha = 1.0;
+    }
+    for (UIView *sub in view.subviews) {
+        EnableAllButtonsRecursively(sub);
     }
 }
 
 // ----------------------------------------------------------------------------
-// 1. Hook: NSURLSession dataTaskWithRequest:completionHandler:
+// 1. Hook: Network Inspector (Alamofire SessionDelegate + NSURLSession)
 // ----------------------------------------------------------------------------
-typedef id (*DataTaskWithRequestTyped)(id, SEL, NSURLRequest *, void (^)(NSData *, NSURLResponse *, NSError *));
-static DataTaskWithRequestTyped orig_dataTaskWithRequest = NULL;
+static BOOL ShouldLogURL(NSString *url) {
+    if (!url || url.length == 0) return NO;
+    return [url containsString:@"Pay"] ||
+           [url containsString:@"Duty"] ||
+           [url containsString:@"basaksehir"];
+}
+
+static void LogOutgoingRequest(NSURLRequest *request) {
+    if (!request) return;
+    NSString *url = request.URL.absoluteString;
+    if (!ShouldLogURL(url)) return;
+
+    NSString *method = request.HTTPMethod ?: @"GET";
+    NSString *bodyStr = @"";
+    if (request.HTTPBody && request.HTTPBody.length > 0) {
+        NSString *utf8 = [[NSString alloc] initWithData:request.HTTPBody encoding:NSUTF8StringEncoding];
+        bodyStr = utf8 ?: [NSString stringWithFormat:@"<binary %lu bytes>", (unsigned long)request.HTTPBody.length];
+    }
+    FEW1NLog([NSString stringWithFormat:@"➡️ REQ: %@ %@\nBody: %@", method, url, bodyStr]);
+}
+
+static id few1n_dataTaskWithRequestOnly(id self, SEL _cmd, NSURLRequest *request) {
+    LogOutgoingRequest(request);
+    SEL newSel = NSSelectorFromString(@"few1n_orig_dataTaskWithRequestOnly:");
+    Method m = class_getInstanceMethod([self class], newSel);
+    if (m) {
+        return ((id (*)(id, SEL, NSURLRequest *))method_getImplementation(m))(self, _cmd, request);
+    }
+    return nil;
+}
 
 static id few1n_dataTaskWithRequest(id self, SEL _cmd, NSURLRequest *request, void (^completionHandler)(NSData *, NSURLResponse *, NSError *)) {
+    LogOutgoingRequest(request);
     NSString *url = request.URL.absoluteString;
-    NSString *method = request.HTTPMethod;
-
-    if ([url containsString:@"Pay"] || [url containsString:@"Duty"] || [url containsString:@"basaksehir"]) {
-        NSString *bodyStr = @"";
-        if (request.HTTPBody) {
-            bodyStr = [[NSString alloc] initWithData:request.HTTPBody encoding:NSUTF8StringEncoding];
-        }
-        FEW1NLog([NSString stringWithFormat:@"➡️ REQ: %@ %@\nBody: %@", method, url, bodyStr]);
-    }
 
     void (^customHandler)(NSData *, NSURLResponse *, NSError *) = ^(NSData *data, NSURLResponse *response, NSError *error) {
-        if ([url containsString:@"Pay"] || [url containsString:@"Duty"] || [url containsString:@"basaksehir"]) {
+        if (ShouldLogURL(url)) {
             NSString *respStr = @"";
-            if (data) {
-                respStr = [[NSString alloc] initWithData:data encoding:NSUTF8StringEncoding];
+            if (data && data.length > 0) {
+                NSString *utf8 = [[NSString alloc] initWithData:data encoding:NSUTF8StringEncoding];
+                respStr = utf8 ?: [NSString stringWithFormat:@"<binary %lu bytes>", (unsigned long)data.length];
             }
-            NSInteger statusCode = [(NSHTTPURLResponse *)response statusCode];
+            NSInteger statusCode = [response isKindOfClass:[NSHTTPURLResponse class]] ? ((NSHTTPURLResponse *)response).statusCode : 0;
             FEW1NLog([NSString stringWithFormat:@"⬅️ RESP (%ld): %@\nBody: %@", (long)statusCode, url, respStr]);
         }
         if (completionHandler) {
@@ -91,9 +274,28 @@ static id few1n_dataTaskWithRequest(id self, SEL _cmd, NSURLRequest *request, vo
     SEL newSel = NSSelectorFromString(@"few1n_orig_dataTaskWithRequest:");
     Method m = class_getInstanceMethod([self class], newSel);
     if (m) {
-        return ((id (*)(id, SEL, NSURLRequest *, id))method_getImplementation(m))(self, newSel, request, customHandler);
+        return ((id (*)(id, SEL, NSURLRequest *, id))method_getImplementation(m))(self, _cmd, request, customHandler);
     }
     return nil;
+}
+
+static void few1n_alamofire_didReceiveData(id self, SEL _cmd, NSURLSession *session, NSURLSessionDataTask *dataTask, NSData *data) {
+    NSString *url = dataTask.originalRequest.URL.absoluteString ?: dataTask.currentRequest.URL.absoluteString;
+    if (ShouldLogURL(url)) {
+        NSInteger statusCode = [dataTask.response isKindOfClass:[NSHTTPURLResponse class]] ? ((NSHTTPURLResponse *)dataTask.response).statusCode : 0;
+        NSString *respStr = @"";
+        if (data && data.length > 0) {
+            NSString *utf8 = [[NSString alloc] initWithData:data encoding:NSUTF8StringEncoding];
+            respStr = utf8 ?: [NSString stringWithFormat:@"<binary %lu bytes>", (unsigned long)data.length];
+        }
+        FEW1NLog([NSString stringWithFormat:@"⬅️ AF RESP (%ld): %@\nBody: %@", (long)statusCode, url ?: @"?", respStr]);
+    }
+
+    SEL newSel = NSSelectorFromString(@"few1n_orig_URLSession:dataTask:didReceiveData:");
+    Method m = class_getInstanceMethod([self class], newSel);
+    if (m) {
+        ((void (*)(id, SEL, id, id, id))method_getImplementation(m))(self, _cmd, session, dataTask, data);
+    }
 }
 
 // ----------------------------------------------------------------------------
@@ -110,7 +312,7 @@ static void few1n_payBalanceView_layoutSubviews(UIView *self, SEL _cmd) {
     SEL newSel = NSSelectorFromString(@"few1n_orig_layoutSubviews");
     Method m = class_getInstanceMethod([self class], newSel);
     if (m) {
-        ((void (*)(id, SEL))method_getImplementation(m))(self, newSel);
+        ((void (*)(id, SEL))method_getImplementation(m))(self, _cmd);
     }
     for (UIView *sub in self.subviews) {
         if ([sub isKindOfClass:[UILabel class]]) {
@@ -134,21 +336,50 @@ static void few1n_showGeneralErrorAlert(id self, SEL _cmd, id arg1) {
 }
 
 // ----------------------------------------------------------------------------
-// 5. Hook: PayViewController paymentModalPaymentButtonTapped -> Success
+// 5. Hook: PayPaymentModalView -> Direct Local Payment Successful UI
 // ----------------------------------------------------------------------------
-static void few1n_paymentModalPaymentButtonTapped(UIViewController *self, SEL _cmd) {
-    FEW1NLog(@"🎯 paymentModalPaymentButtonTapped tetiklendi! Doğrudan Payment Successful akışına yönlendiriliyor.");
-    
-    SEL succSel = NSSelectorFromString(@"paymentSuccessful");
-    if ([self respondsToSelector:succSel]) {
-        ((void (*)(id, SEL))objc_msgSend)(self, succSel);
-    } else {
-        SEL newSel = NSSelectorFromString(@"few1n_orig_paymentModalPaymentButtonTapped");
-        Method m = class_getInstanceMethod([self class], newSel);
-        if (m) {
-            ((void (*)(id, SEL))method_getImplementation(m))(self, newSel);
-        }
+static void few1n_modal_didMoveToWindow(UIView *self, SEL _cmd) {
+    SEL newSel = NSSelectorFromString(@"few1n_orig_modalDidMoveToWindow");
+    Method m = class_getInstanceMethod([self class], newSel);
+    if (m) {
+        ((void (*)(id, SEL))method_getImplementation(m))(self, _cmd);
     }
+    dispatch_async(dispatch_get_main_queue(), ^{
+        EnableAllButtonsRecursively(self);
+    });
+}
+
+static void few1n_modal_contractCheckboxTapped(UIView *self, SEL _cmd, id sender) {
+    SEL newSel = NSSelectorFromString(@"few1n_orig_contractCheckboxTapped:");
+    Method m = class_getInstanceMethod([self class], newSel);
+    if (m) {
+        ((void (*)(id, SEL, id))method_getImplementation(m))(self, _cmd, sender);
+    }
+    dispatch_async(dispatch_get_main_queue(), ^{
+        EnableAllButtonsRecursively(self);
+    });
+}
+
+static void few1n_modal_paymentButtonTapped(UIView *self, SEL _cmd) {
+    FEW1NLog(@"🎯 PayPaymentModalView.paymentButtonTapped yakalandı! Bankaya gitmeden yerel Payment Successful UI tetikleniyor...");
+
+    UIViewController *payVC = FindActivePayViewController(self);
+    if (payVC && TriggerLocalPaymentSuccessUI(payVC)) {
+        FEW1NLog(@"✅ PayViewController Payment Successful UI akışı başlatıldı.");
+        return;
+    }
+
+    FEW1NLog(@"⚠️ Aktif PayViewController bulunamadı, yedek UI uyarısı gösteriliyor.");
+    dispatch_async(dispatch_get_main_queue(), ^{
+        UIViewController *topVC = TopMostViewController();
+        if (topVC) {
+            UIAlertController *alert = [UIAlertController alertControllerWithTitle:@"✅ İşlem Başarılı (Yerel UI)"
+                                                                           message:@"PayViewController bulunamadığı için yedek yerel başarı ekranı gösterildi."
+                                                                    preferredStyle:UIAlertControllerStyleAlert];
+            [alert addAction:[UIAlertAction actionWithTitle:@"Tamam" style:UIAlertActionStyleDefault handler:nil]];
+            [topVC presentViewController:alert animated:YES completion:nil];
+        }
+    });
 }
 
 // ----------------------------------------------------------------------------
@@ -162,7 +393,7 @@ static void few1n_playerView_didChangeToState(id self, SEL _cmd, id player, NSIn
     SEL newSel = NSSelectorFromString(@"few1n_orig_playerViewDidChangeToState:");
     Method m = class_getInstanceMethod([self class], newSel);
     if (m) {
-        ((void (*)(id, SEL, id, NSInteger))method_getImplementation(m))(self, newSel, player, state);
+        ((void (*)(id, SEL, id, NSInteger))method_getImplementation(m))(self, _cmd, player, state);
     }
 }
 
@@ -181,6 +412,7 @@ static void ToggleMenu(void) {
 - (void)handlePan:(UIPanGestureRecognizer *)p;
 - (void)openWalletRoute;
 - (void)openQRRoute;
+- (void)testLocalSuccessUI;
 - (void)clearLogs;
 @end
 
@@ -200,6 +432,15 @@ static void ToggleMenu(void) {
     NSURL *url = [NSURL URLWithString:@"basaksehirli://wallet/qr"];
     [[UIApplication sharedApplication] openURL:url options:@{} completionHandler:nil];
 }
+- (void)testLocalSuccessUI {
+    UIViewController *payVC = FindActivePayViewController(nil);
+    if (payVC && TriggerLocalPaymentSuccessUI(payVC)) {
+        FEW1NLog(@"✅ Menüden PayViewController Payment Successful UI tetiklendi.");
+        ToggleMenu();
+    } else {
+        FEW1NLog(@"⚠️ PayViewController şu an açık değil (önce BaşakPara ekranını aç).");
+    }
+}
 - (void)clearLogs {
     [capturedLogs removeAllObjects];
     networkLogView.text = @"[+] Loglar temizlendi.";
@@ -207,13 +448,7 @@ static void ToggleMenu(void) {
 @end
 
 static void CreateFEW1NFloatingUI(void) {
-    UIWindow *keyWindow = nil;
-    for (UIWindow *w in [UIApplication sharedApplication].windows) {
-        if (w.isKeyWindow) { keyWindow = w; break; }
-    }
-    if (!keyWindow && [UIApplication sharedApplication].windows.count > 0) {
-        keyWindow = [UIApplication sharedApplication].windows.firstObject;
-    }
+    UIWindow *keyWindow = GetKeyWindow();
     if (!keyWindow || floatingBtn) return;
 
     floatingBtn = [UIButton buttonWithType:UIButtonTypeCustom];
@@ -231,7 +466,7 @@ static void CreateFEW1NFloatingUI(void) {
     [floatingBtn addGestureRecognizer:pan];
 
     CGFloat width = keyWindow.bounds.size.width - 40;
-    CGFloat height = 480;
+    CGFloat height = 490;
     menuView = [[UIView alloc] initWithFrame:CGRectMake(20, 100, width, height)];
     menuView.backgroundColor = [UIColor colorWithRed:0.1 green:0.1 blue:0.12 alpha:0.95];
     menuView.layer.cornerRadius = 16;
@@ -241,7 +476,7 @@ static void CreateFEW1NFloatingUI(void) {
     menuView.hidden = YES;
 
     UILabel *title = [[UILabel alloc] initWithFrame:CGRectMake(16, 12, width - 80, 24)];
-    title.text = @"⚡ FEW1N MOD MENU - BAŞAKŞEHİRLİ";
+    title.text = @"⚡ FEW1N MOD MENU v1.0.2";
     title.textColor = [UIColor whiteColor];
     title.font = [UIFont boldSystemFontOfSize:14];
     [menuView addSubview:title];
@@ -254,9 +489,11 @@ static void CreateFEW1NFloatingUI(void) {
     [closeBtn addTarget:floatingBtn action:@selector(toggleMenu) forControlEvents:UIControlEventTouchUpInside];
     [menuView addSubview:closeBtn];
 
+    CGFloat halfW = (width - 40) / 2.0;
+
     UIButton *btnWallet = [UIButton buttonWithType:UIButtonTypeSystem];
-    btnWallet.frame = CGRectMake(16, 45, (width - 40)/2, 36);
-    btnWallet.backgroundColor = [UIColor colorWithRed:0.2 green:0.5 blue:0.8 alpha:0.8];
+    btnWallet.frame = CGRectMake(16, 45, halfW, 36);
+    btnWallet.backgroundColor = [UIColor colorWithRed:0.2 green:0.5 blue:0.8 alpha:0.85];
     [btnWallet setTitle:@"💳 Cüzdan Aç" forState:UIControlStateNormal];
     [btnWallet setTitleColor:[UIColor whiteColor] forState:UIControlStateNormal];
     btnWallet.layer.cornerRadius = 8;
@@ -264,37 +501,51 @@ static void CreateFEW1NFloatingUI(void) {
     [menuView addSubview:btnWallet];
 
     UIButton *btnQR = [UIButton buttonWithType:UIButtonTypeSystem];
-    btnQR.frame = CGRectMake(24 + (width - 40)/2, 45, (width - 40)/2, 36);
-    btnQR.backgroundColor = [UIColor colorWithRed:0.8 green:0.3 blue:0.2 alpha:0.8];
+    btnQR.frame = CGRectMake(24 + halfW, 45, halfW, 36);
+    btnQR.backgroundColor = [UIColor colorWithRed:0.8 green:0.3 blue:0.2 alpha:0.85];
     [btnQR setTitle:@"📷 QR Aç" forState:UIControlStateNormal];
     [btnQR setTitleColor:[UIColor whiteColor] forState:UIControlStateNormal];
     btnQR.layer.cornerRadius = 8;
     [btnQR addTarget:floatingBtn action:@selector(openQRRoute) forControlEvents:UIControlEventTouchUpInside];
     [menuView addSubview:btnQR];
 
+    UIButton *btnTestSuccess = [UIButton buttonWithType:UIButtonTypeSystem];
+    btnTestSuccess.frame = CGRectMake(16, 88, halfW, 32);
+    btnTestSuccess.backgroundColor = [UIColor colorWithRed:0.15 green:0.65 blue:0.35 alpha:0.9];
+    [btnTestSuccess setTitle:@"✅ UI Başarı Test" forState:UIControlStateNormal];
+    [btnTestSuccess setTitleColor:[UIColor whiteColor] forState:UIControlStateNormal];
+    btnTestSuccess.titleLabel.font = [UIFont boldSystemFontOfSize:12];
+    btnTestSuccess.layer.cornerRadius = 6;
+    [btnTestSuccess addTarget:floatingBtn action:@selector(testLocalSuccessUI) forControlEvents:UIControlEventTouchUpInside];
+    [menuView addSubview:btnTestSuccess];
+
     UIButton *btnClear = [UIButton buttonWithType:UIButtonTypeSystem];
-    btnClear.frame = CGRectMake(16, 90, width - 32, 28);
-    btnClear.backgroundColor = [UIColor colorWithWhite:0.25 alpha:0.8];
-    [btnClear setTitle:@"🗑️ Ağ Loglarını Temizle" forState:UIControlStateNormal];
+    btnClear.frame = CGRectMake(24 + halfW, 88, halfW, 32);
+    btnClear.backgroundColor = [UIColor colorWithWhite:0.25 alpha:0.85];
+    [btnClear setTitle:@"🗑️ Log Temizle" forState:UIControlStateNormal];
     [btnClear setTitleColor:[UIColor whiteColor] forState:UIControlStateNormal];
     btnClear.titleLabel.font = [UIFont systemFontOfSize:12];
     btnClear.layer.cornerRadius = 6;
     [btnClear addTarget:floatingBtn action:@selector(clearLogs) forControlEvents:UIControlEventTouchUpInside];
     [menuView addSubview:btnClear];
 
-    UILabel *logLabel = [[UILabel alloc] initWithFrame:CGRectMake(16, 125, width - 32, 20)];
-    logLabel.text = @"📡 CANLI AĞ TRAFİĞİ (REST / v2/Pay):";
+    UILabel *logLabel = [[UILabel alloc] initWithFrame:CGRectMake(16, 128, width - 32, 20)];
+    logLabel.text = @"📡 CANLI AĞ TRAFİĞİ (Alamofire / v2/Pay):";
     logLabel.textColor = [UIColor colorWithRed:0.3 green:0.8 blue:1.0 alpha:1.0];
     logLabel.font = [UIFont boldSystemFontOfSize:12];
     [menuView addSubview:logLabel];
 
-    networkLogView = [[UITextView alloc] initWithFrame:CGRectMake(16, 150, width - 32, height - 165)];
+    networkLogView = [[UITextView alloc] initWithFrame:CGRectMake(16, 152, width - 32, height - 168)];
     networkLogView.backgroundColor = [UIColor colorWithRed:0.05 green:0.05 blue:0.06 alpha:1.0];
     networkLogView.textColor = [UIColor colorWithRed:0.4 green:1.0 blue:0.4 alpha:1.0];
     networkLogView.font = [UIFont fontWithName:@"Courier" size:11];
     networkLogView.editable = NO;
     networkLogView.layer.cornerRadius = 8;
-    networkLogView.text = @"[+] FEW1N Network Inspector devrede...\n[+] İstekler bekleniyor...";
+    if (capturedLogs.count > 0) {
+        networkLogView.text = [capturedLogs componentsJoinedByString:@"\n--------------------\n"];
+    } else {
+        networkLogView.text = @"[+] FEW1N Network Inspector v1.0.2 devrede...\n[+] İstekler bekleniyor...";
+    }
     [menuView addSubview:networkLogView];
 
     [keyWindow addSubview:menuView];
@@ -302,68 +553,133 @@ static void CreateFEW1NFloatingUI(void) {
 }
 
 // ----------------------------------------------------------------------------
-// Constructor (Initializes All Swizzling and UI)
+// Hook Installer (Idempotent, safe to re-run after launch for dynamic frameworks)
 // ----------------------------------------------------------------------------
-__attribute__((constructor))
-static void FEW1NInit(void) {
-    FEW1NLog(@"⚡ FEW1N Basaksehirli Native Mod yüklendi.");
-
-    // 1. Swizzle NSURLSession dataTaskWithRequest:
+static void InstallAllHooks(void) {
+    // 1a. Swizzle NSURLSession dataTaskWithRequest:completionHandler:
     Class sessionCls = [NSURLSession class];
-    SEL origTaskSel = @selector(dataTaskWithRequest:completionHandler:);
-    SEL newTaskSel = NSSelectorFromString(@"few1n_orig_dataTaskWithRequest:");
-    SwizzleInstanceMethod(sessionCls, origTaskSel, newTaskSel, (IMP)few1n_dataTaskWithRequest, "@@:@@");
+    SwizzleInstanceMethod(sessionCls,
+                          @selector(dataTaskWithRequest:completionHandler:),
+                          NSSelectorFromString(@"few1n_orig_dataTaskWithRequest:"),
+                          (IMP)few1n_dataTaskWithRequest,
+                          "@@:@@");
+
+    // 1b. Swizzle NSURLSession dataTaskWithRequest: (used by Alamofire)
+    SwizzleInstanceMethod(sessionCls,
+                          @selector(dataTaskWithRequest:),
+                          NSSelectorFromString(@"few1n_orig_dataTaskWithRequestOnly:"),
+                          (IMP)few1n_dataTaskWithRequestOnly,
+                          "@@:@");
+
+    // 1c. Also check concrete __NSURLSessionLocal class if it overrides either selector
+    Class localSessionCls = NSClassFromString(@"__NSURLSessionLocal");
+    if (localSessionCls) {
+        SwizzleInstanceMethod(localSessionCls,
+                              @selector(dataTaskWithRequest:completionHandler:),
+                              NSSelectorFromString(@"few1n_orig_dataTaskWithRequest:"),
+                              (IMP)few1n_dataTaskWithRequest,
+                              "@@:@@");
+        SwizzleInstanceMethod(localSessionCls,
+                              @selector(dataTaskWithRequest:),
+                              NSSelectorFromString(@"few1n_orig_dataTaskWithRequestOnly:"),
+                              (IMP)few1n_dataTaskWithRequestOnly,
+                              "@@:@");
+    }
+
+    // 1d. Swizzle Alamofire SessionDelegate URLSession:dataTask:didReceiveData:
+    Class afDelegateCls = NSClassFromString(@"_TtC9Alamofire15SessionDelegate");
+    if (afDelegateCls) {
+        SwizzleInstanceMethod(afDelegateCls,
+                              NSSelectorFromString(@"URLSession:dataTask:didReceiveData:"),
+                              NSSelectorFromString(@"few1n_orig_URLSession:dataTask:didReceiveData:"),
+                              (IMP)few1n_alamofire_didReceiveData,
+                              "v@:@@@");
+    }
 
     // 2. Swizzle SideMenuViewModel isBasakParaVisible
     Class sideCls = NSClassFromString(@"_TtC12basaksehirli17SideMenuViewModel");
     if (sideCls) {
-        SEL visSel = NSSelectorFromString(@"isBasakParaVisible");
-        SEL newVisSel = NSSelectorFromString(@"few1n_orig_isBasakParaVisible");
-        SwizzleInstanceMethod(sideCls, visSel, newVisSel, (IMP)few1n_isBasakParaVisible, "B@:");
+        SwizzleInstanceMethod(sideCls,
+                              NSSelectorFromString(@"isBasakParaVisible"),
+                              NSSelectorFromString(@"few1n_orig_isBasakParaVisible"),
+                              (IMP)few1n_isBasakParaVisible,
+                              "B@:");
     }
 
     // 3. Swizzle PayBalanceView layoutSubviews
     Class balCls = NSClassFromString(@"_TtC12basaksehirli14PayBalanceView");
     if (balCls) {
-        SEL laySel = @selector(layoutSubviews);
-        SEL newLaySel = NSSelectorFromString(@"few1n_orig_layoutSubviews");
-        SwizzleInstanceMethod(balCls, laySel, newLaySel, (IMP)few1n_payBalanceView_layoutSubviews, "v@:");
+        SwizzleInstanceMethod(balCls,
+                              @selector(layoutSubviews),
+                              NSSelectorFromString(@"few1n_orig_layoutSubviews"),
+                              (IMP)few1n_payBalanceView_layoutSubviews,
+                              "v@:");
     }
 
     // 4. Swizzle PayAlertManager
     Class alertCls = NSClassFromString(@"_TtC12basaksehirli15PayAlertManager");
     if (alertCls) {
-        SEL errSel = NSSelectorFromString(@"showInsufficientBalance:");
-        SEL newErrSel = NSSelectorFromString(@"few1n_orig_showInsufficientBalance:");
-        SwizzleClassMethod(alertCls, errSel, newErrSel, (IMP)few1n_showInsufficientBalance, "v@:@");
+        SwizzleClassMethod(alertCls,
+                           NSSelectorFromString(@"showInsufficientBalance:"),
+                           NSSelectorFromString(@"few1n_orig_showInsufficientBalance:"),
+                           (IMP)few1n_showInsufficientBalance,
+                           "v@:@");
 
-        SEL genSel = NSSelectorFromString(@"showGeneralErrorAlert:");
-        SEL newGenSel = NSSelectorFromString(@"few1n_orig_showGeneralErrorAlert:");
-        SwizzleClassMethod(alertCls, genSel, newGenSel, (IMP)few1n_showGeneralErrorAlert, "v@:@");
+        SwizzleClassMethod(alertCls,
+                           NSSelectorFromString(@"showGeneralErrorAlert:"),
+                           NSSelectorFromString(@"few1n_orig_showGeneralErrorAlert:"),
+                           (IMP)few1n_showGeneralErrorAlert,
+                           "v@:@");
     }
 
-    // 5. Swizzle PayViewController paymentModalPaymentButtonTapped
-    Class payCls = NSClassFromString(@"_TtC12basaksehirli17PayViewController");
-    if (payCls) {
-        SEL payBtnSel = NSSelectorFromString(@"paymentModalPaymentButtonTapped");
-        SEL newPayBtnSel = NSSelectorFromString(@"few1n_orig_paymentModalPaymentButtonTapped");
-        SwizzleInstanceMethod(payCls, payBtnSel, newPayBtnSel, (IMP)few1n_paymentModalPaymentButtonTapped, "v@:");
+    // 5. Swizzle PayPaymentModalView (actual UIKit target for payment modal button)
+    Class modalCls = NSClassFromString(@"_TtC12basaksehirli19PayPaymentModalView");
+    if (modalCls) {
+        SwizzleInstanceMethod(modalCls,
+                              @selector(didMoveToWindow),
+                              NSSelectorFromString(@"few1n_orig_modalDidMoveToWindow"),
+                              (IMP)few1n_modal_didMoveToWindow,
+                              "v@:");
+
+        SwizzleInstanceMethod(modalCls,
+                              NSSelectorFromString(@"contractCheckboxTapped:"),
+                              NSSelectorFromString(@"few1n_orig_contractCheckboxTapped:"),
+                              (IMP)few1n_modal_contractCheckboxTapped,
+                              "v@:@");
+
+        SwizzleInstanceMethod(modalCls,
+                              NSSelectorFromString(@"paymentButtonTapped"),
+                              NSSelectorFromString(@"few1n_orig_paymentButtonTapped"),
+                              (IMP)few1n_modal_paymentButtonTapped,
+                              "v@:");
     }
 
     // 6. Swizzle VideoDutyViewController
     Class videoCls = NSClassFromString(@"_TtC12basaksehirli23VideoDutyViewController");
     if (videoCls) {
-        SEL vidSel = NSSelectorFromString(@"playerView:didChangeToState:");
-        SEL newVidSel = NSSelectorFromString(@"few1n_orig_playerViewDidChangeToState:");
-        SwizzleInstanceMethod(videoCls, vidSel, newVidSel, (IMP)few1n_playerView_didChangeToState, "v@:@q");
+        SwizzleInstanceMethod(videoCls,
+                              NSSelectorFromString(@"playerView:didChangeToState:"),
+                              NSSelectorFromString(@"few1n_orig_playerViewDidChangeToState:"),
+                              (IMP)few1n_playerView_didChangeToState,
+                              "v@:@q");
     }
+}
 
-    // 7. Inject Floating UI on launch
+// ----------------------------------------------------------------------------
+// Constructor
+// ----------------------------------------------------------------------------
+__attribute__((constructor))
+static void FEW1NInit(void) {
+    FEW1NLog(@"⚡ FEW1N Basaksehirli Native Mod v1.0.2 yüklendi.");
+    InstallAllHooks();
+
     [[NSNotificationCenter defaultCenter] addObserverForName:UIApplicationDidFinishLaunchingNotification
                                                       object:nil
                                                        queue:[NSOperationQueue mainQueue]
                                                   usingBlock:^(NSNotification * _Nonnull note) {
+        InstallAllHooks();
         dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(1.5 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+            InstallAllHooks();
             CreateFEW1NFloatingUI();
         });
     }];
