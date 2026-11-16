@@ -59,11 +59,12 @@ jobs:
         run: |
           set -euo pipefail
           rm -rf .theos FEW1NBasaksehirli.dylib
-          make FINALPACKAGE=1
+          make FINALPACKAGE=1 TARGET_CODESIGN=""
           BUILT=$(find .theos/obj -name "FEW1NBasaksehirli.dylib" -type f | head -n 1)
           echo "Built dylib: $BUILT"
           test -n "$BUILT"
           cp "$BUILT" ./FEW1NBasaksehirli.dylib
+          /usr/bin/codesign -f -s - ./FEW1NBasaksehirli.dylib
           ls -lh ./FEW1NBasaksehirli.dylib
 
       - name: Upload Artifacts
