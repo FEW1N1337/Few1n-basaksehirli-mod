@@ -6,17 +6,27 @@
 #import <dlfcn.h>
 
 // ============================================================================
-// FEW1N Başakşehirli Mod v1.0.2 - PURE Objective-C (Zero Dependencies / Sideload Safe)
-// - Alamofire & NSURLSession HTTP/HTTPS Inspector
-// - PayPaymentModalView paymentButtonTapped -> Direct Local Payment Successful UI
-// - Insufficient Balance / General Error Alert Suppressor
-// - VideoDuty Instant Completion & SideMenu Visibility
+// FEW1N Başakşehirli Mod v1.0.3 - PURE Objective-C (Zero Dependencies / Sideload Safe)
+// - Crash-Free PayViewController Local Payment Success UI (PaymentProgressView + Lottie)
+// - "Cevapla Kazan" Auto-Fetch & Auto-Answer (GET v2/question + POST v2/question/<id>/answer)
+// - Clean JSON-Only Alamofire & NSURLSession Inspector + Clipboard Copy
+// - Insufficient Balance / General Error Alert Suppressor & VideoDuty Skip
 // ============================================================================
 
 static UIButton *floatingBtn = nil;
 static UIView *menuView = nil;
 static UITextView *networkLogView = nil;
 static NSMutableArray *capturedLogs = nil;
+static NSDictionary<NSString *, NSString *> *gLatestApiHeaders = nil;
+
+static id HeadersLock(void) {
+    static id lockObj = nil;
+    static dispatch_once_t onceToken;
+    dispatch_once(&onceToken, ^{
+        lockObj = [NSObject new];
+    });
+    return lockObj;
+}
 
 // ----------------------------------------------------------------------------
 // Helpers: Window & Logging
@@ -171,36 +181,112 @@ static UIViewController *TopMostViewController(void) {
     return top;
 }
 
-typedef void *(*SwiftAllocObjectFn)(void *, size_t, size_t);
-typedef void (*SwiftWeakInitFn)(void *, void *);
+static id GetObjCIvarObject(id obj, const char *ivarName) {
+    if (!obj || !ivarName) return nil;
+    Ivar ivar = class_getInstanceVariable([obj class], ivarName);
+    if (!ivar) return nil;
+    ptrdiff_t offset = ivar_getOffset(ivar);
+    if (offset <= 0 || offset > 4096) return nil;
+    void *ptr = *(void * const *)((const uint8_t *)(__bridge const void *)obj + offset);
+    if (!ptr) return nil;
+    return (__bridge id)ptr;
+}
+
+static void UpdateBalanceLabelsRecursively(UIView *view) {
+    if (!view) return;
+    if ([view isKindOfClass:[UILabel class]]) {
+        UILabel *lbl = (UILabel *)view;
+        if (lbl.text && [lbl.text containsString:@"₺"]) {
+            lbl.text = @"500,00 ₺";
+        }
+    }
+    for (UIView *sub in view.subviews) {
+        UpdateBalanceLabelsRecursively(sub);
+    }
+}
+
+typedef void (*SwiftPaymentSuccessFn)(void * __attribute__((swift_context))) __attribute__((swiftcall));
 
 static BOOL TriggerLocalPaymentSuccessUI(UIViewController *payVC) {
     if (!payVC) return NO;
-    uintptr_t base = GetBasaksehirliBaseAddress();
-    if (!base) return NO;
 
-    SwiftAllocObjectFn allocObj = (SwiftAllocObjectFn)dlsym(RTLD_DEFAULT, "swift_allocObject");
-    SwiftWeakInitFn weakInit = (SwiftWeakInitFn)dlsym(RTLD_DEFAULT, "swift_weakInit");
-    if (!allocObj || !weakInit) {
-        void *swiftCore = dlopen("/usr/lib/swift/libswiftCore.dylib", RTLD_LAZY);
-        if (swiftCore) {
-            if (!allocObj) allocObj = (SwiftAllocObjectFn)dlsym(swiftCore, "swift_allocObject");
-            if (!weakInit) weakInit = (SwiftWeakInitFn)dlsym(swiftCore, "swift_weakInit");
-        }
-    }
+    id modalObj = GetObjCIvarObject(payVC, "paymentModalView");
+    id progressObj = GetObjCIvarObject(payVC, "paymentProgressView");
+    UIView *modalView = [modalObj isKindOfClass:[UIView class]] ? (UIView *)modalObj : nil;
+    UIView *progressView = [progressObj isKindOfClass:[UIView class]] ? (UIView *)progressObj : nil;
 
-    if (!allocObj || !weakInit) {
-        FEW1NLog(@"❌ swift_allocObject veya swift_weakInit bulunamadı.");
-        return NO;
-    }
-
-    void *box = allocObj((void *)(base + 0xd5a8c0), 0x18, 7);
-    if (!box) return NO;
-    weakInit((void *)((uintptr_t)box + 0x10), (__bridge void *)payVC);
-
-    void (*paymentSuccessFn)(void *) = (void (*)(void *))(base + 0xf2300);
     dispatch_async(dispatch_get_main_queue(), ^{
-        paymentSuccessFn(box);
+        if (modalView) {
+            [modalView endEditing:YES];
+            modalView.hidden = YES;
+            modalView.alpha = 0.0;
+        }
+
+        if (progressView) {
+            if (!progressView.superview && payVC.view) {
+                progressView.frame = payVC.view.bounds;
+                progressView.autoresizingMask = UIViewAutoresizingFlexibleWidth | UIViewAutoresizingFlexibleHeight;
+                [payVC.view addSubview:progressView];
+            }
+            progressView.hidden = NO;
+            progressView.alpha = 1.0;
+            if (payVC.view) {
+                [payVC.view bringSubviewToFront:progressView];
+            }
+
+            id titleObj = GetObjCIvarObject(progressView, "titleLabel");
+            if ([titleObj isKindOfClass:[UILabel class]]) {
+                ((UILabel *)titleObj).text = @"İşlem Başarılı";
+            }
+            id subObj = GetObjCIvarObject(progressView, "subtitleLabel");
+            if ([subObj isKindOfClass:[UILabel class]]) {
+                ((UILabel *)subObj).text = @"Ödemeniz başarıyla tamamlandı";
+            }
+
+            Dl_info info;
+            uintptr_t base = 0;
+            IMP imp = class_getMethodImplementation([payVC class], @selector(viewDidLoad));
+            if (imp && dladdr((const void *)imp, &info) && info.dli_fbase) {
+                uintptr_t candidate = (uintptr_t)info.dli_fbase;
+                if (*(const uint32_t *)(candidate + 0x1d71fc) == 0xd10183ffU) {
+                    base = candidate;
+                }
+            }
+            if (!base) {
+                uintptr_t fallback = GetBasaksehirliBaseAddress();
+                if (fallback && *(const uint32_t *)(fallback + 0x1d71fc) == 0xd10183ffU) {
+                    base = fallback;
+                }
+            }
+            if (base) {
+                SwiftPaymentSuccessFn showSuccessFn = (SwiftPaymentSuccessFn)(base + 0x1d71fc);
+                showSuccessFn((__bridge void *)progressView);
+            }
+
+            dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(3.0 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+                [UIView animateWithDuration:0.25 animations:^{
+                    progressView.alpha = 0.0;
+                } completion:^(BOOL finished) {
+                    if (progressView.alpha < 0.1) {
+                        progressView.hidden = YES;
+                    }
+                }];
+            });
+        } else {
+            FEW1NLog(@"⚠️ paymentProgressView ivar bulunamadı, yedek yerel başarı uyarısı gösteriliyor.");
+            UIViewController *topVC = TopMostViewController();
+            if (topVC) {
+                UIAlertController *alert = [UIAlertController alertControllerWithTitle:@"✅ İşlem Başarılı"
+                                                                               message:@"Ödemeniz başarıyla tamamlandı (Yerel UI)"
+                                                                        preferredStyle:UIAlertControllerStyleAlert];
+                [alert addAction:[UIAlertAction actionWithTitle:@"Tamam" style:UIAlertActionStyleDefault handler:nil]];
+                [topVC presentViewController:alert animated:YES completion:nil];
+            }
+        }
+
+        if (payVC.view) {
+            UpdateBalanceLabelsRecursively(payVC.view);
+        }
     });
     return YES;
 }
@@ -219,17 +305,63 @@ static void EnableAllButtonsRecursively(UIView *view) {
 }
 
 // ----------------------------------------------------------------------------
-// 1. Hook: Network Inspector (Alamofire SessionDelegate + NSURLSession)
+// 1. Hook: Network Inspector & API Header Capture
 // ----------------------------------------------------------------------------
 static BOOL ShouldLogURL(NSString *url) {
     if (!url || url.length == 0) return NO;
-    return [url containsString:@"Pay"] ||
-           [url containsString:@"Duty"] ||
-           [url containsString:@"basaksehir"];
+    NSString *lower = [url lowercaseString];
+    if ([lower containsString:@"app-image.basaksehir.bel.tr"] ||
+        [lower containsString:@"/cover/image"] ||
+        [lower containsString:@".jpg"] ||
+        [lower containsString:@".jpeg"] ||
+        [lower containsString:@".png"] ||
+        [lower containsString:@".webp"] ||
+        [lower containsString:@".gif"]) {
+        return NO;
+    }
+    return [lower containsString:@"pay"] ||
+           [lower containsString:@"duty"] ||
+           [lower containsString:@"question"] ||
+           [lower containsString:@"reward"] ||
+           [lower containsString:@"oyunlar"] ||
+           [lower containsString:@"basaksehir"];
 }
 
-static void LogOutgoingRequest(NSURLRequest *request) {
+static void CaptureApiHeadersIfNeeded(NSURLSession *session, NSURLRequest *request) {
+    if (!request || !request.URL.host) return;
+    NSString *host = request.URL.host.lowercaseString;
+    if (![host containsString:@"api-app.basaksehir.bel.tr"]) return;
+
+    NSMutableDictionary<NSString *, NSString *> *merged = [NSMutableDictionary dictionary];
+    if (session && [session.configuration.HTTPAdditionalHeaders isKindOfClass:[NSDictionary class]]) {
+        [session.configuration.HTTPAdditionalHeaders enumerateKeysAndObjectsUsingBlock:^(id key, id obj, BOOL *stop) {
+            if ([key isKindOfClass:[NSString class]] && [obj isKindOfClass:[NSString class]]) {
+                merged[key] = obj;
+            }
+        }];
+    }
+    if ([request.allHTTPHeaderFields isKindOfClass:[NSDictionary class]]) {
+        [request.allHTTPHeaderFields enumerateKeysAndObjectsUsingBlock:^(id key, id obj, BOOL *stop) {
+            if ([key isKindOfClass:[NSString class]] && [obj isKindOfClass:[NSString class]]) {
+                merged[key] = obj;
+            }
+        }];
+    }
+    if (merged.count == 0) return;
+
+    @synchronized(HeadersLock()) {
+        BOOL hasAuth = (merged[@"Authorization"] != nil || merged[@"authorization"] != nil);
+        BOOL existingHasAuth = (gLatestApiHeaders[@"Authorization"] != nil || gLatestApiHeaders[@"authorization"] != nil);
+        if (!gLatestApiHeaders || hasAuth || !existingHasAuth) {
+            gLatestApiHeaders = [merged copy];
+        }
+    }
+}
+
+static void LogOutgoingRequest(NSURLSession *session, NSURLRequest *request) {
     if (!request) return;
+    CaptureApiHeadersIfNeeded(session, request);
+
     NSString *url = request.URL.absoluteString;
     if (!ShouldLogURL(url)) return;
 
@@ -242,8 +374,163 @@ static void LogOutgoingRequest(NSURLRequest *request) {
     FEW1NLog([NSString stringWithFormat:@"➡️ REQ: %@ %@\nBody: %@", method, url, bodyStr]);
 }
 
+static NSMutableURLRequest *BuildApiRequest(NSString *urlString, NSString *method, NSDictionary *jsonBody) {
+    NSURL *url = [NSURL URLWithString:urlString];
+    NSMutableURLRequest *req = [NSMutableURLRequest requestWithURL:url];
+    req.HTTPMethod = method ?: @"GET";
+    req.timeoutInterval = 20.0;
+
+    NSDictionary<NSString *, NSString *> *headers = nil;
+    @synchronized(HeadersLock()) {
+        headers = gLatestApiHeaders;
+    }
+    [headers enumerateKeysAndObjectsUsingBlock:^(NSString *key, NSString *val, BOOL *stop) {
+        NSString *lower = key.lowercaseString;
+        if (![lower isEqualToString:@"content-length"] &&
+            ![lower isEqualToString:@"host"] &&
+            ![lower isEqualToString:@"content-type"]) {
+            [req setValue:val forHTTPHeaderField:key];
+        }
+    }];
+
+    if (jsonBody) {
+        NSError *err = nil;
+        NSData *data = [NSJSONSerialization dataWithJSONObject:jsonBody options:0 error:&err];
+        if (data && !err) {
+            req.HTTPBody = data;
+            [req setValue:@"application/json; charset=utf-8" forHTTPHeaderField:@"Content-Type"];
+        }
+    }
+    return req;
+}
+
+static void RefreshUserPoints(void) {
+    FEW1NLog(@"🔄 Güncel puan sorgulanıyor (GET /api/v2/user/point)...");
+    NSMutableURLRequest *req = BuildApiRequest(@"https://api-app.basaksehir.bel.tr/api/v2/user/point", @"GET", nil);
+    NSURLSessionDataTask *task = [[NSURLSession sharedSession] dataTaskWithRequest:req completionHandler:^(NSData *data, NSURLResponse *response, NSError *error) {
+        if (error) {
+            FEW1NLog([NSString stringWithFormat:@"❌ user/point hatası: %@", error.localizedDescription]);
+            return;
+        }
+        NSInteger code = [response isKindOfClass:[NSHTTPURLResponse class]] ? ((NSHTTPURLResponse *)response).statusCode : 0;
+        NSString *body = data ? ([[NSString alloc] initWithData:data encoding:NSUTF8StringEncoding] ?: @"") : @"";
+        FEW1NLog([NSString stringWithFormat:@"⭐ Güncel Puan (%ld): %@", (long)code, body]);
+    }];
+    [task resume];
+}
+
+static void SubmitQuestionAtIndex(NSArray *questions, NSUInteger idx) {
+    if (!questions || idx >= questions.count) {
+        FEW1NLog(@"✅ Tüm Cevapla Kazan soruları işlendi.");
+        RefreshUserPoints();
+        return;
+    }
+
+    id rawQ = questions[idx];
+    if (![rawQ isKindOfClass:[NSDictionary class]]) {
+        SubmitQuestionAtIndex(questions, idx + 1);
+        return;
+    }
+    NSDictionary *q = (NSDictionary *)rawQ;
+    id qIdObj = q[@"id"];
+    NSString *qId = (qIdObj && qIdObj != [NSNull null]) ? [NSString stringWithFormat:@"%@", qIdObj] : nil;
+    NSString *qTitle = [q[@"title"] isKindOfClass:[NSString class]] ? q[@"title"] : @"(Başlıksız)";
+    NSArray *choices = [q[@"choices"] isKindOfClass:[NSArray class]] ? q[@"choices"] : nil;
+
+    if (!qId || qId.length == 0 || !choices || choices.count == 0) {
+        FEW1NLog([NSString stringWithFormat:@"⚠️ Soru %lu/%lu atlandı (id veya seçenek yok): %@",
+                  (unsigned long)(idx + 1), (unsigned long)questions.count, qTitle]);
+        SubmitQuestionAtIndex(questions, idx + 1);
+        return;
+    }
+
+    id rawChoice = choices.firstObject;
+    if (![rawChoice isKindOfClass:[NSDictionary class]]) {
+        SubmitQuestionAtIndex(questions, idx + 1);
+        return;
+    }
+    NSDictionary *firstChoice = (NSDictionary *)rawChoice;
+    id cIdObj = firstChoice[@"id"];
+    NSString *cId = (cIdObj && cIdObj != [NSNull null]) ? [NSString stringWithFormat:@"%@", cIdObj] : nil;
+    NSString *cTitle = [firstChoice[@"title"] isKindOfClass:[NSString class]] ? firstChoice[@"title"] : @"";
+    if (!cId || cId.length == 0) {
+        FEW1NLog([NSString stringWithFormat:@"⚠️ Soru %lu/%lu seçenek id yok: %@",
+                  (unsigned long)(idx + 1), (unsigned long)questions.count, qTitle]);
+        SubmitQuestionAtIndex(questions, idx + 1);
+        return;
+    }
+
+    NSString *encodedQId = [qId stringByAddingPercentEncodingWithAllowedCharacters:[NSCharacterSet URLPathAllowedCharacterSet]] ?: qId;
+    NSString *answerURL = [NSString stringWithFormat:@"https://api-app.basaksehir.bel.tr/api/v2/question/%@/answer", encodedQId];
+    FEW1NLog([NSString stringWithFormat:@"📤 Cevap gönderiliyor (%lu/%lu): %@ -> %@ (choiceId=%@)",
+              (unsigned long)(idx + 1), (unsigned long)questions.count, qTitle, cTitle, cId]);
+
+    NSMutableURLRequest *req = BuildApiRequest(answerURL, @"POST", @{ @"choiceId": cId });
+    NSURLSessionDataTask *task = [[NSURLSession sharedSession] dataTaskWithRequest:req completionHandler:^(NSData *data, NSURLResponse *response, NSError *error) {
+        if (error) {
+            FEW1NLog([NSString stringWithFormat:@"❌ Cevap gönderme hatası (%@): %@", qId, error.localizedDescription]);
+        } else {
+            NSInteger code = [response isKindOfClass:[NSHTTPURLResponse class]] ? ((NSHTTPURLResponse *)response).statusCode : 0;
+            NSString *body = data ? ([[NSString alloc] initWithData:data encoding:NSUTF8StringEncoding] ?: @"") : @"";
+            FEW1NLog([NSString stringWithFormat:@"✅ Cevap Yanıtı (%ld): %@", (long)code, body]);
+        }
+        SubmitQuestionAtIndex(questions, idx + 1);
+    }];
+    [task resume];
+}
+
+static void RunCevaplaKazanFlow(void) {
+    NSDictionary *headersSnapshot = nil;
+    @synchronized(HeadersLock()) {
+        headersSnapshot = gLatestApiHeaders;
+    }
+    if (!headersSnapshot || headersSnapshot.count == 0) {
+        FEW1NLog(@"⚠️ Henüz API header yakalanamadı (Authorization için istek bekleniyor). Yine de v2/question deneniyor...");
+    } else {
+        FEW1NLog(@"🔍 Cevapla Kazan soruları çekiliyor (GET /api/v2/question)...");
+    }
+
+    NSMutableURLRequest *req = BuildApiRequest(@"https://api-app.basaksehir.bel.tr/api/v2/question", @"GET", nil);
+    NSURLSessionDataTask *task = [[NSURLSession sharedSession] dataTaskWithRequest:req completionHandler:^(NSData *data, NSURLResponse *response, NSError *error) {
+        if (error) {
+            FEW1NLog([NSString stringWithFormat:@"❌ v2/question hatası: %@", error.localizedDescription]);
+            return;
+        }
+        NSInteger code = [response isKindOfClass:[NSHTTPURLResponse class]] ? ((NSHTTPURLResponse *)response).statusCode : 0;
+        NSString *bodyStr = data ? ([[NSString alloc] initWithData:data encoding:NSUTF8StringEncoding] ?: @"") : @"";
+        FEW1NLog([NSString stringWithFormat:@"📋 v2/question (%ld): %@", (long)code, bodyStr]);
+
+        if (!data || data.length == 0) return;
+        NSError *jsonErr = nil;
+        id jsonObj = [NSJSONSerialization JSONObjectWithData:data options:0 error:&jsonErr];
+        if (jsonErr || ![jsonObj isKindOfClass:[NSDictionary class]]) {
+            FEW1NLog([NSString stringWithFormat:@"⚠️ JSON çözümlenemedi: %@", jsonErr.localizedDescription ?: @"NSDictionary değil"]);
+            return;
+        }
+
+        NSArray *questions = [jsonObj[@"questions"] isKindOfClass:[NSArray class]] ? jsonObj[@"questions"] : nil;
+        if (!questions || questions.count == 0) {
+            FEW1NLog(@"ℹ️ Aktif Cevapla Kazan sorusu yok (questions boş).");
+            RefreshUserPoints();
+            return;
+        }
+
+        NSMutableArray *titles = [NSMutableArray array];
+        for (id item in questions) {
+            if ([item isKindOfClass:[NSDictionary class]] && [item[@"title"] isKindOfClass:[NSString class]]) {
+                [titles addObject:item[@"title"]];
+            }
+        }
+        FEW1NLog([NSString stringWithFormat:@"🎯 %lu soru bulundu: %@",
+                  (unsigned long)questions.count, [titles componentsJoinedByString:@" | "]]);
+        SubmitQuestionAtIndex(questions, 0);
+    }];
+    [task resume];
+}
+
 static id few1n_dataTaskWithRequestOnly(id self, SEL _cmd, NSURLRequest *request) {
-    LogOutgoingRequest(request);
+    NSURLSession *sess = [self isKindOfClass:[NSURLSession class]] ? (NSURLSession *)self : nil;
+    LogOutgoingRequest(sess, request);
     SEL newSel = NSSelectorFromString(@"few1n_orig_dataTaskWithRequestOnly:");
     Method m = class_getInstanceMethod([self class], newSel);
     if (m) {
@@ -253,7 +540,8 @@ static id few1n_dataTaskWithRequestOnly(id self, SEL _cmd, NSURLRequest *request
 }
 
 static id few1n_dataTaskWithRequest(id self, SEL _cmd, NSURLRequest *request, void (^completionHandler)(NSData *, NSURLResponse *, NSError *)) {
-    LogOutgoingRequest(request);
+    NSURLSession *sess = [self isKindOfClass:[NSURLSession class]] ? (NSURLSession *)self : nil;
+    LogOutgoingRequest(sess, request);
     NSString *url = request.URL.absoluteString;
 
     void (^customHandler)(NSData *, NSURLResponse *, NSError *) = ^(NSData *data, NSURLResponse *response, NSError *error) {
@@ -414,6 +702,8 @@ static void ToggleMenu(void) {
 - (void)openQRRoute;
 - (void)testLocalSuccessUI;
 - (void)clearLogs;
+- (void)runCevaplaKazan;
+- (void)copyLogs;
 @end
 
 @implementation UIButton (FEW1NActions)
@@ -445,6 +735,16 @@ static void ToggleMenu(void) {
     [capturedLogs removeAllObjects];
     networkLogView.text = @"[+] Loglar temizlendi.";
 }
+- (void)runCevaplaKazan {
+    RunCevaplaKazanFlow();
+}
+- (void)copyLogs {
+    NSString *allText = capturedLogs.count > 0
+        ? [capturedLogs componentsJoinedByString:@"\n--------------------\n"]
+        : (networkLogView.text ?: @"");
+    [UIPasteboard generalPasteboard].string = allText;
+    FEW1NLog(@"📋 Loglar panoya kopyalandı.");
+}
 @end
 
 static void CreateFEW1NFloatingUI(void) {
@@ -466,8 +766,8 @@ static void CreateFEW1NFloatingUI(void) {
     [floatingBtn addGestureRecognizer:pan];
 
     CGFloat width = keyWindow.bounds.size.width - 40;
-    CGFloat height = 490;
-    menuView = [[UIView alloc] initWithFrame:CGRectMake(20, 100, width, height)];
+    CGFloat height = MIN(keyWindow.bounds.size.height - 125, 510);
+    menuView = [[UIView alloc] initWithFrame:CGRectMake(20, 95, width, height)];
     menuView.backgroundColor = [UIColor colorWithRed:0.1 green:0.1 blue:0.12 alpha:0.95];
     menuView.layer.cornerRadius = 16;
     menuView.layer.borderWidth = 1.5;
@@ -476,7 +776,7 @@ static void CreateFEW1NFloatingUI(void) {
     menuView.hidden = YES;
 
     UILabel *title = [[UILabel alloc] initWithFrame:CGRectMake(16, 12, width - 80, 24)];
-    title.text = @"⚡ FEW1N MOD MENU v1.0.2";
+    title.text = @"⚡ FEW1N MOD MENU v1.0.3";
     title.textColor = [UIColor whiteColor];
     title.font = [UIFont boldSystemFontOfSize:14];
     [menuView addSubview:title];
@@ -492,7 +792,7 @@ static void CreateFEW1NFloatingUI(void) {
     CGFloat halfW = (width - 40) / 2.0;
 
     UIButton *btnWallet = [UIButton buttonWithType:UIButtonTypeSystem];
-    btnWallet.frame = CGRectMake(16, 45, halfW, 36);
+    btnWallet.frame = CGRectMake(16, 45, halfW, 34);
     btnWallet.backgroundColor = [UIColor colorWithRed:0.2 green:0.5 blue:0.8 alpha:0.85];
     [btnWallet setTitle:@"💳 Cüzdan Aç" forState:UIControlStateNormal];
     [btnWallet setTitleColor:[UIColor whiteColor] forState:UIControlStateNormal];
@@ -501,7 +801,7 @@ static void CreateFEW1NFloatingUI(void) {
     [menuView addSubview:btnWallet];
 
     UIButton *btnQR = [UIButton buttonWithType:UIButtonTypeSystem];
-    btnQR.frame = CGRectMake(24 + halfW, 45, halfW, 36);
+    btnQR.frame = CGRectMake(24 + halfW, 45, halfW, 34);
     btnQR.backgroundColor = [UIColor colorWithRed:0.8 green:0.3 blue:0.2 alpha:0.85];
     [btnQR setTitle:@"📷 QR Aç" forState:UIControlStateNormal];
     [btnQR setTitleColor:[UIColor whiteColor] forState:UIControlStateNormal];
@@ -510,7 +810,7 @@ static void CreateFEW1NFloatingUI(void) {
     [menuView addSubview:btnQR];
 
     UIButton *btnTestSuccess = [UIButton buttonWithType:UIButtonTypeSystem];
-    btnTestSuccess.frame = CGRectMake(16, 88, halfW, 32);
+    btnTestSuccess.frame = CGRectMake(16, 85, halfW, 32);
     btnTestSuccess.backgroundColor = [UIColor colorWithRed:0.15 green:0.65 blue:0.35 alpha:0.9];
     [btnTestSuccess setTitle:@"✅ UI Başarı Test" forState:UIControlStateNormal];
     [btnTestSuccess setTitleColor:[UIColor whiteColor] forState:UIControlStateNormal];
@@ -520,7 +820,7 @@ static void CreateFEW1NFloatingUI(void) {
     [menuView addSubview:btnTestSuccess];
 
     UIButton *btnClear = [UIButton buttonWithType:UIButtonTypeSystem];
-    btnClear.frame = CGRectMake(24 + halfW, 88, halfW, 32);
+    btnClear.frame = CGRectMake(24 + halfW, 85, halfW, 32);
     btnClear.backgroundColor = [UIColor colorWithWhite:0.25 alpha:0.85];
     [btnClear setTitle:@"🗑️ Log Temizle" forState:UIControlStateNormal];
     [btnClear setTitleColor:[UIColor whiteColor] forState:UIControlStateNormal];
@@ -529,13 +829,33 @@ static void CreateFEW1NFloatingUI(void) {
     [btnClear addTarget:floatingBtn action:@selector(clearLogs) forControlEvents:UIControlEventTouchUpInside];
     [menuView addSubview:btnClear];
 
-    UILabel *logLabel = [[UILabel alloc] initWithFrame:CGRectMake(16, 128, width - 32, 20)];
-    logLabel.text = @"📡 CANLI AĞ TRAFİĞİ (Alamofire / v2/Pay):";
+    UIButton *btnSurvey = [UIButton buttonWithType:UIButtonTypeSystem];
+    btnSurvey.frame = CGRectMake(16, 123, halfW, 32);
+    btnSurvey.backgroundColor = [UIColor colorWithRed:0.55 green:0.32 blue:0.85 alpha:0.9];
+    [btnSurvey setTitle:@"❓ Cevapla Kazan" forState:UIControlStateNormal];
+    [btnSurvey setTitleColor:[UIColor whiteColor] forState:UIControlStateNormal];
+    btnSurvey.titleLabel.font = [UIFont boldSystemFontOfSize:12];
+    btnSurvey.layer.cornerRadius = 6;
+    [btnSurvey addTarget:floatingBtn action:@selector(runCevaplaKazan) forControlEvents:UIControlEventTouchUpInside];
+    [menuView addSubview:btnSurvey];
+
+    UIButton *btnCopy = [UIButton buttonWithType:UIButtonTypeSystem];
+    btnCopy.frame = CGRectMake(24 + halfW, 123, halfW, 32);
+    btnCopy.backgroundColor = [UIColor colorWithRed:0.18 green:0.45 blue:0.65 alpha:0.9];
+    [btnCopy setTitle:@"📋 Kopyala" forState:UIControlStateNormal];
+    [btnCopy setTitleColor:[UIColor whiteColor] forState:UIControlStateNormal];
+    btnCopy.titleLabel.font = [UIFont boldSystemFontOfSize:12];
+    btnCopy.layer.cornerRadius = 6;
+    [btnCopy addTarget:floatingBtn action:@selector(copyLogs) forControlEvents:UIControlEventTouchUpInside];
+    [menuView addSubview:btnCopy];
+
+    UILabel *logLabel = [[UILabel alloc] initWithFrame:CGRectMake(16, 162, width - 32, 20)];
+    logLabel.text = @"📡 CANLI JSON AĞ TRAFİĞİ (Alamofire / v2/Pay / Question):";
     logLabel.textColor = [UIColor colorWithRed:0.3 green:0.8 blue:1.0 alpha:1.0];
-    logLabel.font = [UIFont boldSystemFontOfSize:12];
+    logLabel.font = [UIFont boldSystemFontOfSize:11];
     [menuView addSubview:logLabel];
 
-    networkLogView = [[UITextView alloc] initWithFrame:CGRectMake(16, 152, width - 32, height - 168)];
+    networkLogView = [[UITextView alloc] initWithFrame:CGRectMake(16, 186, width - 32, height - 202)];
     networkLogView.backgroundColor = [UIColor colorWithRed:0.05 green:0.05 blue:0.06 alpha:1.0];
     networkLogView.textColor = [UIColor colorWithRed:0.4 green:1.0 blue:0.4 alpha:1.0];
     networkLogView.font = [UIFont fontWithName:@"Courier" size:11];
@@ -544,7 +864,7 @@ static void CreateFEW1NFloatingUI(void) {
     if (capturedLogs.count > 0) {
         networkLogView.text = [capturedLogs componentsJoinedByString:@"\n--------------------\n"];
     } else {
-        networkLogView.text = @"[+] FEW1N Network Inspector v1.0.2 devrede...\n[+] İstekler bekleniyor...";
+        networkLogView.text = @"[+] FEW1N Network Inspector v1.0.3 devrede...\n[+] JSON istekleri bekleniyor...";
     }
     [menuView addSubview:networkLogView];
 
@@ -670,7 +990,7 @@ static void InstallAllHooks(void) {
 // ----------------------------------------------------------------------------
 __attribute__((constructor))
 static void FEW1NInit(void) {
-    FEW1NLog(@"⚡ FEW1N Basaksehirli Native Mod v1.0.2 yüklendi.");
+    FEW1NLog(@"⚡ FEW1N Basaksehirli Native Mod v1.0.3 yüklendi.");
     InstallAllHooks();
 
     [[NSNotificationCenter defaultCenter] addObserverForName:UIApplicationDidFinishLaunchingNotification
