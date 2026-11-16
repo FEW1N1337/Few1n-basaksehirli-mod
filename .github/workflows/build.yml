@@ -15,7 +15,7 @@ concurrency:
 jobs:
   build:
     name: Build FEW1N Basaksehirli Tweak
-    runs-on: macos-15
+    runs-on: macos-latest
     timeout-minutes: 20
 
     env:
@@ -30,7 +30,7 @@ jobs:
         uses: actions/cache@v4
         with:
           path: ${{ env.THEOS }}
-          key: theos-macos15-v2
+          key: theos-macos-latest-v2
 
       - name: Setup Theos
         shell: bash
@@ -58,12 +58,16 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          make package FINALPACKAGE=1
+          rm -rf .theos FEW1NBasaksehirli.dylib
+          make FINALPACKAGE=1
+          BUILT=$(find .theos/obj -name "FEW1NBasaksehirli.dylib" -type f | head -n 1)
+          echo "Built dylib: $BUILT"
+          test -n "$BUILT"
+          cp "$BUILT" ./FEW1NBasaksehirli.dylib
+          ls -lh ./FEW1NBasaksehirli.dylib
 
       - name: Upload Artifacts
         uses: actions/upload-artifact@v4
         with:
           name: FEW1NBasaksehirli-Dylib
-          path: |
-            .theos/obj/debug/*.dylib
-            packages/*.deb
+          path: ./FEW1NBasaksehirli.dylib
