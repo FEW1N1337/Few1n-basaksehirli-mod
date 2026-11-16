@@ -1,0 +1,35 @@
+name: Build FEW1N Basaksehirli Tweak (.dylib)
+
+on:
+  push:
+    branches: [ "main", "master" ]
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: macos-13
+
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Install Theos
+        run: |
+          git clone --recursive https://github.com/theos/theos.git ~/theos
+          echo "THEOS=~/theos" >> $GITHUB_ENV
+
+      - name: Download iOS SDK
+        run: |
+          git clone --quiet https://github.com/theos/sdks.git ~/theos/sdks
+
+      - name: Build Tweak (.dylib)
+        run: |
+          make package FINALPACKAGE=1
+
+      - name: Upload Built Dylib & Deb Artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: FEW1NBasaksehirli-Dylib
+          path: |
+            .theos/obj/debug/*.dylib
+            packages/*.deb
