@@ -6,8 +6,9 @@
 #import <dlfcn.h>
 
 // ============================================================================
-// FEW1N Başakşehirli Mod v1.0.3 - PURE Objective-C (Zero Dependencies / Sideload Safe)
+// FEW1N Başakşehirli Mod v1.0.4 - PURE Objective-C (Zero Dependencies / Sideload Safe)
 // - Crash-Free PayViewController Local Payment Success UI (PaymentProgressView + Lottie)
+// - BaşakPara & Wallet API Mock Interceptor (500₺ Balance & Successful Payment Response)
 // - "Cevapla Kazan" Auto-Fetch & Auto-Answer (GET v2/question + POST v2/question/<id>/answer)
 // - Clean JSON-Only Alamofire & NSURLSession Inspector + Clipboard Copy
 // - Insufficient Balance / General Error Alert Suppressor & VideoDuty Skip
@@ -18,6 +19,33 @@ static UIView *menuView = nil;
 static UITextView *networkLogView = nil;
 static NSMutableArray *capturedLogs = nil;
 static NSDictionary<NSString *, NSString *> *gLatestApiHeaders = nil;
+static BOOL gEnableMockPay = YES;
+
+static NSData *GetMockPayloadForURL(NSString *url, NSString *method, NSInteger *outStatusCode) {
+    if (!gEnableMockPay || !url || url.length == 0) return nil;
+    NSString *lower = [url lowercaseString];
+    if (![lower containsString:@"api-app.basaksehir.bel.tr"]) return nil;
+
+    // 1. Balance & Wallet queries
+    if ([lower containsString:@"/pay/balance"] ||
+        [lower containsString:@"/wallet/balance"] ||
+        [lower containsString:@"/user/balance"] ||
+        [lower containsString:@"/user/point"] ||
+        [lower containsString:@"/wallet"]) {
+        if (outStatusCode) *outStatusCode = 200;
+        NSString *mockJson = @"{\"status\":true,\"message\":\"Başarılı\",\"data\":{\"balance\":500.00,\"point\":500,\"amount\":500.00,\"currency\":\"TRY\",\"status\":\"ACTIVE\",\"is_active\":true,\"card_status\":\"ACTIVE\"}}";
+        return [mockJson dataUsingEncoding:NSUTF8StringEncoding];
+    }
+
+    // 2. Payment submission / confirmation
+    if ([lower containsString:@"/pay"] || [lower containsString:@"/payment"]) {
+        if (outStatusCode) *outStatusCode = 200;
+        NSString *mockJson = @"{\"status\":true,\"message\":\"Ödemeniz başarıyla tamamlandı\",\"data\":{\"status\":\"SUCCESS\",\"transaction_id\":\"FEW1N-1337-MOCK\",\"amount\":500.00,\"date\":\"2026-11-19\"}}";
+        return [mockJson dataUsingEncoding:NSUTF8StringEncoding];
+    }
+
+    return nil;
+}
 
 static id HeadersLock(void) {
     static id lockObj = nil;
@@ -545,17 +573,34 @@ static id few1n_dataTaskWithRequest(id self, SEL _cmd, NSURLRequest *request, vo
     NSString *url = request.URL.absoluteString;
 
     void (^customHandler)(NSData *, NSURLResponse *, NSError *) = ^(NSData *data, NSURLResponse *response, NSError *error) {
+        NSData *finalData = data;
+        NSURLResponse *finalResp = response;
+        NSError *finalErr = error;
+
+        NSInteger mockCode = 200;
+        NSData *mockPayload = GetMockPayloadForURL(url, request.HTTPMethod, &mockCode);
+        if (mockPayload) {
+            finalData = mockPayload;
+            finalErr = nil;
+            NSURL *targetURL = request.URL ?: (response.URL ?: [NSURL URLWithString:@"https://api-app.basaksehir.bel.tr"]);
+            finalResp = [[NSHTTPURLResponse alloc] initWithURL:targetURL
+                                                    statusCode:mockCode
+                                                   HTTPVersion:@"HTTP/1.1"
+                                                  headerFields:@{@"Content-Type": @"application/json; charset=utf-8"}];
+            FEW1NLog([NSString stringWithFormat:@"🎭 [Mock URLSession] %@ -> 200 OK sahte yanıt iletildi.", url]);
+        }
+
         if (ShouldLogURL(url)) {
             NSString *respStr = @"";
-            if (data && data.length > 0) {
-                NSString *utf8 = [[NSString alloc] initWithData:data encoding:NSUTF8StringEncoding];
-                respStr = utf8 ?: [NSString stringWithFormat:@"<binary %lu bytes>", (unsigned long)data.length];
+            if (finalData && finalData.length > 0) {
+                NSString *utf8 = [[NSString alloc] initWithData:finalData encoding:NSUTF8StringEncoding];
+                respStr = utf8 ?: [NSString stringWithFormat:@"<binary %lu bytes>", (unsigned long)finalData.length];
             }
-            NSInteger statusCode = [response isKindOfClass:[NSHTTPURLResponse class]] ? ((NSHTTPURLResponse *)response).statusCode : 0;
+            NSInteger statusCode = [finalResp isKindOfClass:[NSHTTPURLResponse class]] ? ((NSHTTPURLResponse *)finalResp).statusCode : 0;
             FEW1NLog([NSString stringWithFormat:@"⬅️ RESP (%ld): %@\nBody: %@", (long)statusCode, url, respStr]);
         }
         if (completionHandler) {
-            completionHandler(data, response, error);
+            completionHandler(finalData, finalResp, finalErr);
         }
     };
 
@@ -567,14 +612,44 @@ static id few1n_dataTaskWithRequest(id self, SEL _cmd, NSURLRequest *request, vo
     return nil;
 }
 
+static void few1n_alamofire_didReceiveResponse(id self, SEL _cmd, NSURLSession *session, NSURLSessionDataTask *dataTask, NSURLResponse *response, void (^completionHandler)(NSURLSessionResponseDisposition)) {
+    NSString *url = dataTask.originalRequest.URL.absoluteString ?: dataTask.currentRequest.URL.absoluteString;
+    NSURLResponse *forwardResponse = response;
+
+    NSInteger mockCode = 200;
+    if (GetMockPayloadForURL(url, dataTask.currentRequest.HTTPMethod, &mockCode)) {
+        NSURL *targetURL = response.URL ?: (dataTask.currentRequest.URL ?: [NSURL URLWithString:@"https://api-app.basaksehir.bel.tr"]);
+        forwardResponse = [[NSHTTPURLResponse alloc] initWithURL:targetURL
+                                                      statusCode:200
+                                                     HTTPVersion:@"HTTP/1.1"
+                                                    headerFields:@{@"Content-Type": @"application/json; charset=utf-8"}];
+        FEW1NLog([NSString stringWithFormat:@"🎭 [AF Mock Status] Status 200 OK yapıldı: %@", url ?: @"?"]);
+    }
+
+    SEL newSel = NSSelectorFromString(@"few1n_orig_URLSession:dataTask:didReceiveResponse:completionHandler:");
+    Method m = class_getInstanceMethod([self class], newSel);
+    if (m) {
+        ((void (*)(id, SEL, id, id, id, id))method_getImplementation(m))(self, _cmd, session, dataTask, forwardResponse, completionHandler);
+    }
+}
+
 static void few1n_alamofire_didReceiveData(id self, SEL _cmd, NSURLSession *session, NSURLSessionDataTask *dataTask, NSData *data) {
     NSString *url = dataTask.originalRequest.URL.absoluteString ?: dataTask.currentRequest.URL.absoluteString;
+    NSData *forwardData = data;
+
+    NSInteger mockCode = 200;
+    NSData *mockPayload = GetMockPayloadForURL(url, dataTask.currentRequest.HTTPMethod, &mockCode);
+    if (mockPayload) {
+        forwardData = mockPayload;
+        FEW1NLog([NSString stringWithFormat:@"🎭 [AF Mock Body] Başak Para API yanıtı mock data ile ezildi: %@", url ?: @"?"]);
+    }
+
     if (ShouldLogURL(url)) {
-        NSInteger statusCode = [dataTask.response isKindOfClass:[NSHTTPURLResponse class]] ? ((NSHTTPURLResponse *)dataTask.response).statusCode : 0;
+        NSInteger statusCode = [dataTask.response isKindOfClass:[NSHTTPURLResponse class]] ? ((NSHTTPURLResponse *)dataTask.response).statusCode : 200;
         NSString *respStr = @"";
-        if (data && data.length > 0) {
-            NSString *utf8 = [[NSString alloc] initWithData:data encoding:NSUTF8StringEncoding];
-            respStr = utf8 ?: [NSString stringWithFormat:@"<binary %lu bytes>", (unsigned long)data.length];
+        if (forwardData && forwardData.length > 0) {
+            NSString *utf8 = [[NSString alloc] initWithData:forwardData encoding:NSUTF8StringEncoding];
+            respStr = utf8 ?: [NSString stringWithFormat:@"<binary %lu bytes>", (unsigned long)forwardData.length];
         }
         FEW1NLog([NSString stringWithFormat:@"⬅️ AF RESP (%ld): %@\nBody: %@", (long)statusCode, url ?: @"?", respStr]);
     }
@@ -582,7 +657,24 @@ static void few1n_alamofire_didReceiveData(id self, SEL _cmd, NSURLSession *sess
     SEL newSel = NSSelectorFromString(@"few1n_orig_URLSession:dataTask:didReceiveData:");
     Method m = class_getInstanceMethod([self class], newSel);
     if (m) {
-        ((void (*)(id, SEL, id, id, id))method_getImplementation(m))(self, _cmd, session, dataTask, data);
+        ((void (*)(id, SEL, id, id, id))method_getImplementation(m))(self, _cmd, session, dataTask, forwardData);
+    }
+}
+
+static void few1n_alamofire_didCompleteWithError(id self, SEL _cmd, NSURLSession *session, NSURLSessionTask *task, NSError *error) {
+    NSString *url = task.originalRequest.URL.absoluteString ?: task.currentRequest.URL.absoluteString;
+    NSError *forwardError = error;
+
+    NSInteger mockCode = 200;
+    if (error && GetMockPayloadForURL(url, task.currentRequest.HTTPMethod, &mockCode)) {
+        FEW1NLog([NSString stringWithFormat:@"🎭 [AF Mock Clean] Ağ hatası bastırıldı: %@", url ?: @"?"]);
+        forwardError = nil;
+    }
+
+    SEL newSel = NSSelectorFromString(@"few1n_orig_URLSession:task:didCompleteWithError:");
+    Method m = class_getInstanceMethod([self class], newSel);
+    if (m) {
+        ((void (*)(id, SEL, id, id, id))method_getImplementation(m))(self, _cmd, session, task, forwardError);
     }
 }
 
@@ -704,6 +796,7 @@ static void ToggleMenu(void) {
 - (void)clearLogs;
 - (void)runCevaplaKazan;
 - (void)copyLogs;
+- (void)toggleMockPay;
 @end
 
 @implementation UIButton (FEW1NActions)
@@ -745,6 +838,20 @@ static void ToggleMenu(void) {
     [UIPasteboard generalPasteboard].string = allText;
     FEW1NLog(@"📋 Loglar panoya kopyalandı.");
 }
+- (void)toggleMockPay {
+    gEnableMockPay = !gEnableMockPay;
+    UIButton *btn = (UIButton *)[menuView viewWithTag:777];
+    if ([btn isKindOfClass:[UIButton class]]) {
+        if (gEnableMockPay) {
+            [btn setTitle:@"🎭 BaşakPara Mock: AÇIK (500₺)" forState:UIControlStateNormal];
+            btn.backgroundColor = [UIColor colorWithRed:0.15 green:0.65 blue:0.35 alpha:0.9];
+        } else {
+            [btn setTitle:@"🎭 BaşakPara Mock: KAPALI (Ağ)" forState:UIControlStateNormal];
+            btn.backgroundColor = [UIColor colorWithWhite:0.25 alpha:0.85];
+        }
+    }
+    FEW1NLog([NSString stringWithFormat:@"🎭 BaşakPara API Mock: %@", gEnableMockPay ? @"AÇIK" : @"KAPALI"]);
+}
 @end
 
 static void CreateFEW1NFloatingUI(void) {
@@ -766,7 +873,7 @@ static void CreateFEW1NFloatingUI(void) {
     [floatingBtn addGestureRecognizer:pan];
 
     CGFloat width = keyWindow.bounds.size.width - 40;
-    CGFloat height = MIN(keyWindow.bounds.size.height - 125, 510);
+    CGFloat height = MIN(keyWindow.bounds.size.height - 120, 545);
     menuView = [[UIView alloc] initWithFrame:CGRectMake(20, 95, width, height)];
     menuView.backgroundColor = [UIColor colorWithRed:0.1 green:0.1 blue:0.12 alpha:0.95];
     menuView.layer.cornerRadius = 16;
@@ -776,7 +883,7 @@ static void CreateFEW1NFloatingUI(void) {
     menuView.hidden = YES;
 
     UILabel *title = [[UILabel alloc] initWithFrame:CGRectMake(16, 12, width - 80, 24)];
-    title.text = @"⚡ FEW1N MOD MENU v1.0.3";
+    title.text = @"⚡ FEW1N MOD MENU v1.0.4";
     title.textColor = [UIColor whiteColor];
     title.font = [UIFont boldSystemFontOfSize:14];
     [menuView addSubview:title];
@@ -849,13 +956,24 @@ static void CreateFEW1NFloatingUI(void) {
     [btnCopy addTarget:floatingBtn action:@selector(copyLogs) forControlEvents:UIControlEventTouchUpInside];
     [menuView addSubview:btnCopy];
 
-    UILabel *logLabel = [[UILabel alloc] initWithFrame:CGRectMake(16, 162, width - 32, 20)];
+    UIButton *btnMockPay = [UIButton buttonWithType:UIButtonTypeSystem];
+    btnMockPay.frame = CGRectMake(16, 161, width - 32, 32);
+    btnMockPay.tag = 777;
+    btnMockPay.backgroundColor = gEnableMockPay ? [UIColor colorWithRed:0.15 green:0.65 blue:0.35 alpha:0.9] : [UIColor colorWithWhite:0.25 alpha:0.85];
+    [btnMockPay setTitle:gEnableMockPay ? @"🎭 BaşakPara Mock: AÇIK (500₺)" : @"🎭 BaşakPara Mock: KAPALI (Ağ)" forState:UIControlStateNormal];
+    [btnMockPay setTitleColor:[UIColor whiteColor] forState:UIControlStateNormal];
+    btnMockPay.titleLabel.font = [UIFont boldSystemFontOfSize:12];
+    btnMockPay.layer.cornerRadius = 6;
+    [btnMockPay addTarget:floatingBtn action:@selector(toggleMockPay) forControlEvents:UIControlEventTouchUpInside];
+    [menuView addSubview:btnMockPay];
+
+    UILabel *logLabel = [[UILabel alloc] initWithFrame:CGRectMake(16, 199, width - 32, 18)];
     logLabel.text = @"📡 CANLI JSON AĞ TRAFİĞİ (Alamofire / v2/Pay / Question):";
     logLabel.textColor = [UIColor colorWithRed:0.3 green:0.8 blue:1.0 alpha:1.0];
     logLabel.font = [UIFont boldSystemFontOfSize:11];
     [menuView addSubview:logLabel];
 
-    networkLogView = [[UITextView alloc] initWithFrame:CGRectMake(16, 186, width - 32, height - 202)];
+    networkLogView = [[UITextView alloc] initWithFrame:CGRectMake(16, 221, width - 32, height - 233)];
     networkLogView.backgroundColor = [UIColor colorWithRed:0.05 green:0.05 blue:0.06 alpha:1.0];
     networkLogView.textColor = [UIColor colorWithRed:0.4 green:1.0 blue:0.4 alpha:1.0];
     networkLogView.font = [UIFont fontWithName:@"Courier" size:11];
@@ -864,7 +982,7 @@ static void CreateFEW1NFloatingUI(void) {
     if (capturedLogs.count > 0) {
         networkLogView.text = [capturedLogs componentsJoinedByString:@"\n--------------------\n"];
     } else {
-        networkLogView.text = @"[+] FEW1N Network Inspector v1.0.3 devrede...\n[+] JSON istekleri bekleniyor...";
+        networkLogView.text = @"[+] FEW1N Network Inspector v1.0.4 devrede...\n[+] BaşakPara API Mock: AÇIK (500₺ Success)\n[+] JSON istekleri bekleniyor...";
     }
     [menuView addSubview:networkLogView];
 
@@ -906,13 +1024,23 @@ static void InstallAllHooks(void) {
                               "@@:@");
     }
 
-    // 1d. Swizzle Alamofire SessionDelegate URLSession:dataTask:didReceiveData:
+    // 1d. Swizzle Alamofire SessionDelegate delegate methods
     Class afDelegateCls = NSClassFromString(@"_TtC9Alamofire15SessionDelegate");
     if (afDelegateCls) {
+        SwizzleInstanceMethod(afDelegateCls,
+                              NSSelectorFromString(@"URLSession:dataTask:didReceiveResponse:completionHandler:"),
+                              NSSelectorFromString(@"few1n_orig_URLSession:dataTask:didReceiveResponse:completionHandler:"),
+                              (IMP)few1n_alamofire_didReceiveResponse,
+                              "v@:@@@@");
         SwizzleInstanceMethod(afDelegateCls,
                               NSSelectorFromString(@"URLSession:dataTask:didReceiveData:"),
                               NSSelectorFromString(@"few1n_orig_URLSession:dataTask:didReceiveData:"),
                               (IMP)few1n_alamofire_didReceiveData,
+                              "v@:@@@");
+        SwizzleInstanceMethod(afDelegateCls,
+                              NSSelectorFromString(@"URLSession:task:didCompleteWithError:"),
+                              NSSelectorFromString(@"few1n_orig_URLSession:task:didCompleteWithError:"),
+                              (IMP)few1n_alamofire_didCompleteWithError,
                               "v@:@@@");
     }
 
@@ -990,7 +1118,7 @@ static void InstallAllHooks(void) {
 // ----------------------------------------------------------------------------
 __attribute__((constructor))
 static void FEW1NInit(void) {
-    FEW1NLog(@"⚡ FEW1N Basaksehirli Native Mod v1.0.3 yüklendi.");
+    FEW1NLog(@"⚡ FEW1N Basaksehirli Native Mod v1.0.4 yüklendi.");
     InstallAllHooks();
 
     [[NSNotificationCenter defaultCenter] addObserverForName:UIApplicationDidFinishLaunchingNotification
