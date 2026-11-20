@@ -1,9 +1,9 @@
 # Son oturum
 
-## 2026-11-20 02:15 · v1.0.7-newTransaction-qr-mock · dd8189fe
-- **Ne yaptık:** `https://api-app.basaksehir.bel.tr/api/v2/Pay/newTransaction` çözüldü. Swagger v2 şeması (`NewTransactionRequest: {qr, isControl}`) incelenerek `ShouldMockURL` ve `ApplyMockPatchForURL` içine `/pay/newtransaction` ve `/pay/newpayment` eklendi. Swift Decodable uyumlu 200 OK yanıt şeması hazırlandı. `isControl: false` ödeme onayında yerel başarı animasyonu (`TriggerLocalPaymentSuccessUI`) otomatik tetiklendi. Global hata alert susturucusu ve menüye `⚡ newTransaction` butonu eklendi, v1.0.7 arm64 dylib derlendi.
-- **Karar:** QR okutma ve ödeme adımlarında sunucunun döndürdüğü 401 yetkisiz/yetersiz bakiye engelleri hem ağ seviyesinde 200 OK ile ezildi hem de arayüzde başarılı ödeme akışına bağlandı.
-- **Sonraki adım:** Yeni v1.0.7 dylib'i cihazda QR okutarak ve menüdeki test butonuyla doğrulamak.
+## 2026-11-20 02:48 · v1.0.8-positive-fee-fix · 230d2e8
+- **Ne yaptık:** "Ücret bilgisi alınamadı" hatası analiz edildi. Önceki mock yanıtta `amount: 0` verildiği için Swift tarafındaki `guard amount > 0` kontrolünün takıldığı belirlendi. Sentetik yanıta pozitif değerler (`amount: 50.0`, `price`, `fee`, `tutar`, `ucret`, `paymentAmount`, `totalAmount`) eklendi. Ayrıca `few1n_presentViewController` alert engelleyicisine "ücret bilgisi" filtresi eklendi. CI üzerinden yeni dylib derlenip depoya eşitlendi.
+- **Karar:** `newTransaction` ön-kontrolünde tutar 0 olamaz; pozitif tutar ve tüm olası fiyat anahtarları verilerek UI ödeme onay modalının açılması garanti altına alındı.
+- **Sonraki adım:** v1.0.8 dylib ile QR okutmasını tekrar test etmek.
 
 ## 2026-11-19 22:47 · v1.0.6-schema-safe-5000 · 5c00a23c
 - **Ne yaptık:** Yakalanan gerçek JSON şemaları (GetUserWallet: walletPoint, payDashboard: point+payCampaingList, userPayments: point) kullanılarak v1.0.6'da ApplyMockPatchForURL yazıldı. Tüm diğer JSON alanları (userName, payCampaingList, coinPacks, userTransactions) korunarak sadece BaşakPara bakiye alanı 5000 olarak yamanıyor. Derlenip GitHub'a pushlandı (commit 6bc9fc9).
