@@ -6,7 +6,7 @@
 #import <dlfcn.h>
 
 // ============================================================================
-// FEW1N Başakşehirli Mod v1.0.7 - PURE Objective-C (Zero Dependencies / Sideload Safe)
+// FEW1N Başakşehirli Mod v1.0.9 - PURE Objective-C (Zero Dependencies / Sideload Safe)
 // - Pay/newTransaction QR & Payment Flow Solver (Auto-Mock & Local Success Animation)
 // - Crash-Free PayViewController Local Payment Success UI (PaymentProgressView + Lottie)
 // - BaşakPara Schema-Safe Mock (Patches GetUserWallet/payDashboard/userPayments -> 5000)
@@ -38,31 +38,42 @@ static NSMutableArray *capturedLogs = nil;
 static NSDictionary<NSString *, NSString *> *gLatestApiHeaders = nil;
 static BOOL gEnableMockPay = YES;
 
+static UIWindowScene *GetActiveWindowScene(void) {
+    if (@available(iOS 13.0, *)) {
+        for (UIScene *scene in [UIApplication sharedApplication].connectedScenes) {
+            if ([scene isKindOfClass:[UIWindowScene class]]) {
+                UIWindowScene *ws = (UIWindowScene *)scene;
+                if (ws.activationState == UISceneActivationStateForegroundActive) {
+                    return ws;
+                }
+            }
+        }
+        for (UIScene *scene in [UIApplication sharedApplication].connectedScenes) {
+            if ([scene isKindOfClass:[UIWindowScene class]]) {
+                return (UIWindowScene *)scene;
+            }
+        }
+        for (UIWindow *w in [UIApplication sharedApplication].windows) {
+            if (w.windowScene) return w.windowScene;
+        }
+    }
+    return nil;
+}
+
 static void EnsureOverlayWindow(void) {
+    if (@available(iOS 13.0, *)) {
+        if (gOverlayWindow && !gOverlayWindow.windowScene) {
+            gOverlayWindow.windowScene = GetActiveWindowScene();
+        }
+    }
+
     if (gOverlayWindow && gOverlayWindow.rootViewController && gOverlayWindow.rootViewController.view) {
         gOverlayWindow.hidden = NO;
         return;
     }
 
     CGRect bounds = [UIScreen mainScreen].bounds;
-    UIWindowScene *activeScene = nil;
-    if (@available(iOS 13.0, *)) {
-        for (UIScene *scene in [UIApplication sharedApplication].connectedScenes) {
-            if ([scene isKindOfClass:[UIWindowScene class]] &&
-                scene.activationState == UISceneActivationStateForegroundActive) {
-                activeScene = (UIWindowScene *)scene;
-                break;
-            }
-        }
-        if (!activeScene) {
-            for (UIScene *scene in [UIApplication sharedApplication].connectedScenes) {
-                if ([scene isKindOfClass:[UIWindowScene class]]) {
-                    activeScene = (UIWindowScene *)scene;
-                    break;
-                }
-            }
-        }
-    }
+    UIWindowScene *activeScene = GetActiveWindowScene();
 
     if (activeScene) {
         gOverlayWindow = [[FEW1NOverlayWindow alloc] initWithWindowScene:activeScene];
@@ -84,7 +95,7 @@ static void EnsureOverlayWindow(void) {
 static BOOL ShouldMockURL(NSString *url) {
     if (!gEnableMockPay || !url || url.length == 0) return NO;
     NSString *lower = [url lowercaseString];
-    if (![lower containsString:@"api-app.basaksehir.bel.tr"]) return NO;
+    if (![lower containsString:@"basaksehir.bel.tr"]) return NO;
 
     return [lower containsString:@"/pay/getuserwallet"] ||
            [lower containsString:@"/pay/paydashboard"] ||
@@ -142,70 +153,67 @@ static NSData *ApplyMockPatchForURL(NSString *url, NSData *origData, NSInteger *
 
     if ([lower containsString:@"/pay/newtransaction"]) {
         if (outStatusCode) *outStatusCode = 200;
+        NSMutableDictionary *dict = [NSMutableDictionary dictionary];
         if (origData && origData.length > 0) {
             NSError *err = nil;
             id jsonObj = [NSJSONSerialization JSONObjectWithData:origData options:NSJSONReadingMutableContainers error:&err];
-            if (!err && [jsonObj isKindOfClass:[NSMutableDictionary class]]) {
-                NSMutableDictionary *dict = (NSMutableDictionary *)jsonObj;
-                if (!dict[@"errorMessageForUser"] && !dict[@"errorMessageForDebug"]) {
-                    if (dict[@"point"]) dict[@"point"] = @"5000";
-                    if (dict[@"walletPoint"]) dict[@"walletPoint"] = @"5000";
-                    dict[@"status"] = @YES;
-                    dict[@"isSuccess"] = @YES;
-                    dict[@"message"] = @"İşlem başarılı";
-                    NSData *patched = [NSJSONSerialization dataWithJSONObject:dict options:0 error:&err];
-                    if (patched && !err) return patched;
-                }
+            if (!err && [jsonObj isKindOfClass:[NSDictionary class]]) {
+                [dict addEntriesFromDictionary:(NSDictionary *)jsonObj];
             }
         }
-        NSDictionary *mockTx = @{
-            @"status": @YES,
-            @"isSuccess": @YES,
-            @"success": @YES,
-            @"result": @YES,
-            @"message": @"İşlem başarıyla tamamlandı",
-            @"transactionId": @"FEW1N-TX-1337",
-            @"id": @"1337",
-            @"qr": @"",
-            @"amount": @(50.0),
-            @"price": @(50.0),
-            @"fee": @(50.0),
-            @"tutar": @(50.0),
-            @"ucret": @(50.0),
-            @"totalAmount": @(50.0),
-            @"paymentAmount": @(50.0),
-            @"point": @"50",
-            @"walletPoint": @"5000",
-            @"merchantName": @"Başakşehir Belediyesi",
-            @"storeName": @"Başakşehir",
-            @"title": @"Başakşehir Belediyesi",
-            @"date": @"2026-11-20",
-            @"data": @{
-                @"status": @YES,
-                @"isSuccess": @YES,
-                @"success": @YES,
-                @"result": @YES,
-                @"message": @"İşlem başarıyla tamamlandı",
-                @"transactionId": @"FEW1N-TX-1337",
-                @"id": @"1337",
-                @"qr": @"",
-                @"amount": @(50.0),
-                @"price": @(50.0),
-                @"fee": @(50.0),
-                @"tutar": @(50.0),
-                @"ucret": @(50.0),
-                @"totalAmount": @(50.0),
-                @"paymentAmount": @(50.0),
-                @"point": @"50",
-                @"walletPoint": @"5000",
-                @"merchantName": @"Başakşehir Belediyesi",
-                @"storeName": @"Başakşehir",
-                @"title": @"Başakşehir Belediyesi",
-                @"date": @"2026-11-20"
-            }
-        };
+        dict[@"status"] = @YES;
+        dict[@"isSuccess"] = @YES;
+        dict[@"success"] = @YES;
+        dict[@"result"] = @YES;
+        dict[@"message"] = @"İşlem başarıyla tamamlandı";
+        dict[@"transactionId"] = dict[@"transactionId"] ?: @"FEW1N-TX-1337";
+        dict[@"id"] = dict[@"id"] ?: @"1337";
+        dict[@"amount"] = @(50.0);
+        dict[@"price"] = @(50.0);
+        dict[@"fee"] = @(50.0);
+        dict[@"tutar"] = @(50.0);
+        dict[@"ucret"] = @(50.0);
+        dict[@"totalAmount"] = @(50.0);
+        dict[@"paymentAmount"] = @(50.0);
+        dict[@"point"] = @"50";
+        dict[@"walletPoint"] = @"5000";
+        dict[@"merchantName"] = @"Başakşehir Belediyesi";
+        dict[@"storeName"] = @"Başakşehir";
+        dict[@"title"] = @"Başakşehir Belediyesi";
+        dict[@"stationCode"] = @"101";
+        dict[@"stationName"] = @"Başakşehir Şarj İstasyonu";
+        dict[@"date"] = @"2026-11-20";
+
+        NSMutableDictionary *innerData = [NSMutableDictionary dictionary];
+        if ([dict[@"data"] isKindOfClass:[NSDictionary class]]) {
+            [innerData addEntriesFromDictionary:dict[@"data"]];
+        }
+        innerData[@"status"] = @YES;
+        innerData[@"isSuccess"] = @YES;
+        innerData[@"success"] = @YES;
+        innerData[@"result"] = @YES;
+        innerData[@"message"] = @"İşlem başarıyla tamamlandı";
+        innerData[@"transactionId"] = innerData[@"transactionId"] ?: @"FEW1N-TX-1337";
+        innerData[@"id"] = innerData[@"id"] ?: @"1337";
+        innerData[@"amount"] = @(50.0);
+        innerData[@"price"] = @(50.0);
+        innerData[@"fee"] = @(50.0);
+        innerData[@"tutar"] = @(50.0);
+        innerData[@"ucret"] = @(50.0);
+        innerData[@"totalAmount"] = @(50.0);
+        innerData[@"paymentAmount"] = @(50.0);
+        innerData[@"point"] = @"50";
+        innerData[@"walletPoint"] = @"5000";
+        innerData[@"merchantName"] = @"Başakşehir Belediyesi";
+        innerData[@"storeName"] = @"Başakşehir";
+        innerData[@"title"] = @"Başakşehir Belediyesi";
+        innerData[@"stationCode"] = @"101";
+        innerData[@"stationName"] = @"Başakşehir Şarj İstasyonu";
+        innerData[@"date"] = @"2026-11-20";
+        dict[@"data"] = innerData;
+
         NSError *err = nil;
-        return [NSJSONSerialization dataWithJSONObject:mockTx options:0 error:&err];
+        return [NSJSONSerialization dataWithJSONObject:dict options:0 error:&err];
     }
 
     if ([lower containsString:@"/pay/newpayment"]) {
@@ -1060,6 +1068,23 @@ static void few1n_showGeneralErrorAlert(id self, SEL _cmd, id arg1) {
     FEW1NLog(@"[Hook] General Error alert engellendi.");
 }
 
+static BOOL ViewContainsErrorText(UIView *view) {
+    if (!view) return NO;
+    if ([view isKindOfClass:[UILabel class]]) {
+        NSString *t = [(UILabel *)view text].lowercaseString;
+        if ([t containsString:@"ücret bilgisi"] || [t containsString:@"ucret bilgisi"] ||
+            [t containsString:@"alınamadı"] || [t containsString:@"alinamadi"] ||
+            [t containsString:@"tekrar tarayın"] || [t containsString:@"tekrar tarayin"] ||
+            [t containsString:@"geçersiz qr"] || [t containsString:@"gecersiz qr"]) {
+            return YES;
+        }
+    }
+    for (UIView *sub in view.subviews) {
+        if (ViewContainsErrorText(sub)) return YES;
+    }
+    return NO;
+}
+
 static void few1n_presentViewController(UIViewController *self, SEL _cmd, UIViewController *vcToPresent, BOOL animated, void (^completion)(void)) {
     if ([vcToPresent isKindOfClass:[UIAlertController class]]) {
         UIAlertController *alert = (UIAlertController *)vcToPresent;
@@ -1074,11 +1099,20 @@ static void few1n_presentViewController(UIViewController *self, SEL _cmd, UIView
             [combined containsString:@"ucret bilgisi"] ||
             [combined containsString:@"alınamadı"] ||
             [combined containsString:@"alinamadi"] ||
+            [combined containsString:@"tekrar tarayın"] ||
+            [combined containsString:@"tekrar tarayin"] ||
             [combined containsString:@"bulunamadı"] ||
             [combined containsString:@"bulunamadi"] ||
             [combined containsString:@"geçersiz qr"] ||
             [combined containsString:@"gecersiz qr"]) {
             FEW1NLog([NSString stringWithFormat:@"🛑 [Alert Suppressor] Hata uyarısı bastırıldı: '%@'", title.length > 0 ? title : msg]);
+            if (completion) completion();
+            return;
+        }
+    } else if (vcToPresent) {
+        if (([vcToPresent isViewLoaded] && ViewContainsErrorText(vcToPresent.view)) ||
+            ViewContainsErrorText(vcToPresent.view)) {
+            FEW1NLog(@"🛑 [Custom VC Suppressor] 'Ücret bilgisi alınamadı' modalı engellendi!");
             if (completion) completion();
             return;
         }
@@ -1090,6 +1124,19 @@ static void few1n_presentViewController(UIViewController *self, SEL _cmd, UIView
     }
 }
 
+static void few1n_view_didMoveToWindow(UIView *self, SEL _cmd) {
+    SEL newSel = NSSelectorFromString(@"few1n_orig_viewDidMoveToWindow");
+    Method m = class_getInstanceMethod([UIView class], newSel);
+    if (m) {
+        ((void (*)(id, SEL))method_getImplementation(m))(self, _cmd);
+    }
+    if (self.window != nil && ViewContainsErrorText(self)) {
+        FEW1NLog(@"🛑 [View Trap] 'Ücret bilgisi alınamadı' popup kartı yakalandı ve gizlendi!");
+        self.hidden = YES;
+        [self removeFromSuperview];
+    }
+}
+
 static void few1n_label_setText(UILabel *self, SEL _cmd, NSString *text) {
     if ([text isKindOfClass:[NSString class]]) {
         NSString *lower = [text lowercaseString];
@@ -1097,6 +1144,8 @@ static void few1n_label_setText(UILabel *self, SEL _cmd, NSString *text) {
             [lower containsString:@"alinamadi"] ||
             [lower containsString:@"ücret bilgisi"] ||
             [lower containsString:@"ucret bilgisi"] ||
+            [lower containsString:@"tekrar tarayın"] ||
+            [lower containsString:@"tekrar tarayin"] ||
             [lower containsString:@"bulunamadı"] ||
             [lower containsString:@"bulunamadi"] ||
             [lower containsString:@"geçersiz qr"] ||
@@ -1122,6 +1171,8 @@ static void few1n_label_setAttributedText(UILabel *self, SEL _cmd, NSAttributedS
             [lower containsString:@"alinamadi"] ||
             [lower containsString:@"ücret bilgisi"] ||
             [lower containsString:@"ucret bilgisi"] ||
+            [lower containsString:@"tekrar tarayın"] ||
+            [lower containsString:@"tekrar tarayin"] ||
             [lower containsString:@"bulunamadı"] ||
             [lower containsString:@"bulunamadi"] ||
             [lower containsString:@"geçersiz qr"] ||
@@ -1150,6 +1201,13 @@ static void few1n_viewDidAppear(UIViewController *self, SEL _cmd, BOOL animated)
     if (m) {
         ((void (*)(id, SEL, BOOL))method_getImplementation(m))(self, _cmd, animated);
     }
+
+    if ([self isViewLoaded] && ViewContainsErrorText(self.view)) {
+        FEW1NLog(@"🛑 [VC Auto-Dismiss] 'Ücret bilgisi alınamadı' modal sayfası çalışma anında kapatıldı!");
+        [self dismissViewControllerAnimated:NO completion:nil];
+        return;
+    }
+
     dispatch_async(dispatch_get_main_queue(), ^{
         EnsureOverlayWindow();
         if (gOverlayWindow) {
@@ -1366,7 +1424,7 @@ static void CreateFEW1NFloatingUI(void) {
         menuView.hidden = YES;
 
         UILabel *title = [[UILabel alloc] initWithFrame:CGRectMake(16, 12, width - 80, 24)];
-        title.text = @"⚡ FEW1N MOD MENU v1.0.8";
+        title.text = @"⚡ FEW1N MOD MENU v1.0.9";
     title.textColor = [UIColor whiteColor];
     title.font = [UIFont boldSystemFontOfSize:14];
     [menuView addSubview:title];
@@ -1668,6 +1726,13 @@ static void InstallAllHooks(void) {
                           NSSelectorFromString(@"few1n_orig_setAttributedText:"),
                           (IMP)few1n_label_setAttributedText,
                           "v@:@");
+
+    // 9. Swizzle UIView didMoveToWindow (traps and removes any error popup card)
+    SwizzleInstanceMethod([UIView class],
+                          @selector(didMoveToWindow),
+                          NSSelectorFromString(@"few1n_orig_viewDidMoveToWindow"),
+                          (IMP)few1n_view_didMoveToWindow,
+                          "v@:");
 }
 
 // ----------------------------------------------------------------------------
@@ -1675,7 +1740,7 @@ static void InstallAllHooks(void) {
 // ----------------------------------------------------------------------------
 __attribute__((constructor))
 static void FEW1NInit(void) {
-    FEW1NLog(@"⚡ FEW1N Basaksehirli Native Mod v1.0.8 yüklendi.");
+    FEW1NLog(@"⚡ FEW1N Basaksehirli Native Mod v1.0.9 yüklendi.");
     InstallAllHooks();
 
     [[NSNotificationCenter defaultCenter] addObserverForName:UIApplicationDidFinishLaunchingNotification
