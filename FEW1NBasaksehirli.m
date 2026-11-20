@@ -6,7 +6,7 @@
 #import <dlfcn.h>
 
 // ============================================================================
-// FEW1N Başakşehirli Mod v1.0.9 - PURE Objective-C (Zero Dependencies / Sideload Safe)
+// FEW1N Başakşehirli Mod v1.1.0 - PURE Objective-C (Zero Dependencies / Sideload Safe)
 // - Pay/newTransaction QR & Payment Flow Solver (Auto-Mock & Local Success Animation)
 // - Crash-Free PayViewController Local Payment Success UI (PaymentProgressView + Lottie)
 // - BaşakPara Schema-Safe Mock (Patches GetUserWallet/payDashboard/userPayments -> 5000)
@@ -37,6 +37,7 @@ static UITextView *networkLogView = nil;
 static NSMutableArray *capturedLogs = nil;
 static NSDictionary<NSString *, NSString *> *gLatestApiHeaders = nil;
 static BOOL gEnableMockPay = YES;
+static NSString *gLatestScannedQR = @"BKQ0010010007";
 
 static UIWindowScene *GetActiveWindowScene(void) {
     if (@available(iOS 13.0, *)) {
@@ -161,6 +162,13 @@ static NSData *ApplyMockPatchForURL(NSString *url, NSData *origData, NSInteger *
                 [dict addEntriesFromDictionary:(NSDictionary *)jsonObj];
             }
         }
+        [dict removeObjectForKey:@"errorMessageForUser"];
+        [dict removeObjectForKey:@"errorMessageForDebug"];
+        [dict removeObjectForKey:@"error"];
+        [dict removeObjectForKey:@"errorCode"];
+        [dict removeObjectForKey:@"errors"];
+        [dict removeObjectForKey:@"isError"];
+
         dict[@"status"] = @YES;
         dict[@"isSuccess"] = @YES;
         dict[@"success"] = @YES;
@@ -182,12 +190,20 @@ static NSData *ApplyMockPatchForURL(NSString *url, NSData *origData, NSInteger *
         dict[@"title"] = @"Başakşehir Belediyesi";
         dict[@"stationCode"] = @"101";
         dict[@"stationName"] = @"Başakşehir Şarj İstasyonu";
+        dict[@"qr"] = gLatestScannedQR ?: @"BKQ0010010007";
         dict[@"date"] = @"2026-11-20";
 
         NSMutableDictionary *innerData = [NSMutableDictionary dictionary];
         if ([dict[@"data"] isKindOfClass:[NSDictionary class]]) {
             [innerData addEntriesFromDictionary:dict[@"data"]];
         }
+        [innerData removeObjectForKey:@"errorMessageForUser"];
+        [innerData removeObjectForKey:@"errorMessageForDebug"];
+        [innerData removeObjectForKey:@"error"];
+        [innerData removeObjectForKey:@"errorCode"];
+        [innerData removeObjectForKey:@"errors"];
+        [innerData removeObjectForKey:@"isError"];
+
         innerData[@"status"] = @YES;
         innerData[@"isSuccess"] = @YES;
         innerData[@"success"] = @YES;
@@ -209,6 +225,7 @@ static NSData *ApplyMockPatchForURL(NSString *url, NSData *origData, NSInteger *
         innerData[@"title"] = @"Başakşehir Belediyesi";
         innerData[@"stationCode"] = @"101";
         innerData[@"stationName"] = @"Başakşehir Şarj İstasyonu";
+        innerData[@"qr"] = gLatestScannedQR ?: @"BKQ0010010007";
         innerData[@"date"] = @"2026-11-20";
         dict[@"data"] = innerData;
 
@@ -658,6 +675,14 @@ static void LogOutgoingRequest(NSURLSession *session, NSURLRequest *request) {
     if (request.HTTPBody && request.HTTPBody.length > 0) {
         NSString *utf8 = [[NSString alloc] initWithData:request.HTTPBody encoding:NSUTF8StringEncoding];
         bodyStr = utf8 ?: [NSString stringWithFormat:@"<binary %lu bytes>", (unsigned long)request.HTTPBody.length];
+        if ([url.lowercaseString containsString:@"/pay/newtransaction"]) {
+            NSError *err = nil;
+            id j = [NSJSONSerialization JSONObjectWithData:request.HTTPBody options:0 error:&err];
+            if ([j isKindOfClass:[NSDictionary class]] && [j[@"qr"] isKindOfClass:[NSString class]]) {
+                gLatestScannedQR = [j[@"qr"] copy];
+                FEW1NLog([NSString stringWithFormat:@"📷 Son taranan QR hafızaya alındı: %@", gLatestScannedQR]);
+            }
+        }
     }
     FEW1NLog([NSString stringWithFormat:@"➡️ REQ: %@ %@\nBody: %@", method, url, bodyStr]);
 }
@@ -1137,23 +1162,42 @@ static void few1n_view_didMoveToWindow(UIView *self, SEL _cmd) {
     }
 }
 
+static UIButton *FindButtonRecursively(UIView *view) {
+    if (!view) return nil;
+    if ([view isKindOfClass:[UIButton class]]) return (UIButton *)view;
+    for (UIView *sub in view.subviews) {
+        UIButton *b = FindButtonRecursively(sub);
+        if (b) return b;
+    }
+    return nil;
+}
+
 static void few1n_label_setText(UILabel *self, SEL _cmd, NSString *text) {
     if ([text isKindOfClass:[NSString class]]) {
         NSString *lower = [text lowercaseString];
-        if ([lower containsString:@"alınamadı"] ||
-            [lower containsString:@"alinamadi"] ||
-            [lower containsString:@"ücret bilgisi"] ||
+        if ([lower containsString:@"ücret bilgisi"] ||
             [lower containsString:@"ucret bilgisi"] ||
             [lower containsString:@"tekrar tarayın"] ||
             [lower containsString:@"tekrar tarayin"] ||
-            [lower containsString:@"bulunamadı"] ||
-            [lower containsString:@"bulunamadi"] ||
-            [lower containsString:@"geçersiz qr"] ||
-            [lower containsString:@"gecersiz qr"]) {
+            [lower containsString:@"bakiyeniz yetersiz"] ||
+            [lower containsString:@"işlem başlatılamadı"] ||
+            [lower containsString:@"islem baslatilamadi"] ||
+            ([lower containsString:@"qr"] && ([lower containsString:@"alınamadı"] || [lower containsString:@"alinamadi"] || [lower containsString:@"geçersiz"] || [lower containsString:@"gecersiz"]))) {
             FEW1NLog([NSString stringWithFormat:@"🎯 [UILabel Yakalandı] '%@' -> 'Ödenecek Tutar: 50,00 ₺' yapıldı.", text]);
             text = @"Ödenecek Tutar: 50,00 ₺";
             dispatch_async(dispatch_get_main_queue(), ^{
                 EnableAllButtonsRecursively(self.superview ?: self);
+                UIButton *actionBtn = FindButtonRecursively(self.superview);
+                if (actionBtn) {
+                    [actionBtn setTitle:@"💳 Hemen Öde (50,00 ₺)" forState:UIControlStateNormal];
+                    actionBtn.backgroundColor = [UIColor colorWithRed:0.12 green:0.75 blue:0.35 alpha:1.0];
+                    [actionBtn setTitleColor:[UIColor whiteColor] forState:UIControlStateNormal];
+                    actionBtn.titleLabel.font = [UIFont boldSystemFontOfSize:16];
+                    actionBtn.layer.cornerRadius = 10;
+                    actionBtn.clipsToBounds = YES;
+                    [actionBtn removeTarget:nil action:NULL forControlEvents:UIControlEventAllEvents];
+                    [actionBtn addTarget:actionBtn action:@selector(few1n_confirmPaymentAndSuccess) forControlEvents:UIControlEventTouchUpInside];
+                }
             });
         }
     }
@@ -1167,22 +1211,31 @@ static void few1n_label_setText(UILabel *self, SEL _cmd, NSString *text) {
 static void few1n_label_setAttributedText(UILabel *self, SEL _cmd, NSAttributedString *attrText) {
     if (attrText && [attrText.string isKindOfClass:[NSString class]]) {
         NSString *lower = [attrText.string lowercaseString];
-        if ([lower containsString:@"alınamadı"] ||
-            [lower containsString:@"alinamadi"] ||
-            [lower containsString:@"ücret bilgisi"] ||
+        if ([lower containsString:@"ücret bilgisi"] ||
             [lower containsString:@"ucret bilgisi"] ||
             [lower containsString:@"tekrar tarayın"] ||
             [lower containsString:@"tekrar tarayin"] ||
-            [lower containsString:@"bulunamadı"] ||
-            [lower containsString:@"bulunamadi"] ||
-            [lower containsString:@"geçersiz qr"] ||
-            [lower containsString:@"gecersiz qr"]) {
+            [lower containsString:@"bakiyeniz yetersiz"] ||
+            [lower containsString:@"işlem başlatılamadı"] ||
+            [lower containsString:@"islem baslatilamadi"] ||
+            ([lower containsString:@"qr"] && ([lower containsString:@"alınamadı"] || [lower containsString:@"alinamadi"] || [lower containsString:@"geçersiz"] || [lower containsString:@"gecersiz"]))) {
             FEW1NLog([NSString stringWithFormat:@"🎯 [UILabel Attributed Yakalandı] '%@' -> 'Ödenecek Tutar: 50,00 ₺' yapıldı.", attrText.string]);
             attrText = [[NSAttributedString alloc] initWithString:@"Ödenecek Tutar: 50,00 ₺"
                                                        attributes:@{NSForegroundColorAttributeName: [UIColor colorWithRed:0.2 green:0.8 blue:0.4 alpha:1.0],
                                                                     NSFontAttributeName: [UIFont boldSystemFontOfSize:16]}];
             dispatch_async(dispatch_get_main_queue(), ^{
                 EnableAllButtonsRecursively(self.superview ?: self);
+                UIButton *actionBtn = FindButtonRecursively(self.superview);
+                if (actionBtn) {
+                    [actionBtn setTitle:@"💳 Hemen Öde (50,00 ₺)" forState:UIControlStateNormal];
+                    actionBtn.backgroundColor = [UIColor colorWithRed:0.12 green:0.75 blue:0.35 alpha:1.0];
+                    [actionBtn setTitleColor:[UIColor whiteColor] forState:UIControlStateNormal];
+                    actionBtn.titleLabel.font = [UIFont boldSystemFontOfSize:16];
+                    actionBtn.layer.cornerRadius = 10;
+                    actionBtn.clipsToBounds = YES;
+                    [actionBtn removeTarget:nil action:NULL forControlEvents:UIControlEventAllEvents];
+                    [actionBtn addTarget:actionBtn action:@selector(few1n_confirmPaymentAndSuccess) forControlEvents:UIControlEventTouchUpInside];
+                }
             });
         }
     }
@@ -1311,6 +1364,7 @@ static void ToggleMenu(void) {
 - (void)copyLogs;
 - (void)toggleMockPay;
 - (void)testNewTransaction;
+- (void)few1n_confirmPaymentAndSuccess;
 @end
 
 @implementation UIButton (FEW1NActions)
@@ -1369,7 +1423,7 @@ static void ToggleMenu(void) {
 - (void)testNewTransaction {
     FEW1NLog(@"⚡ [Test] /Pay/newTransaction isteği gönderiliyor...");
     NSDictionary *body = @{
-        @"qr": @"FEW1N-PAY-QR-1337",
+        @"qr": gLatestScannedQR ?: @"FEW1N-PAY-QR-1337",
         @"isControl": @NO
     };
     NSMutableURLRequest *req = BuildApiRequest(@"https://api-app.basaksehir.bel.tr/api/v2/Pay/newTransaction", @"POST", body);
@@ -1377,6 +1431,43 @@ static void ToggleMenu(void) {
         NSInteger code = [response isKindOfClass:[NSHTTPURLResponse class]] ? ((NSHTTPURLResponse *)response).statusCode : 0;
         NSString *bodyStr = data ? ([[NSString alloc] initWithData:data encoding:NSUTF8StringEncoding] ?: @"") : @"";
         FEW1NLog([NSString stringWithFormat:@"🎯 [newTransaction Test Sonucu] HTTP %ld:\n%@", (long)code, bodyStr]);
+    }];
+    [task resume];
+}
+- (void)few1n_confirmPaymentAndSuccess {
+    FEW1NLog(@"💸 [Hemen Öde] Butona basıldı! 50,00 ₺ ödeme onaylanıyor...");
+    UIView *card = self.superview;
+    while (card && card.superview && ![card.superview isKindOfClass:[UIWindow class]]) {
+        card = card.superview;
+    }
+    if (card) {
+        card.hidden = YES;
+        [card removeFromSuperview];
+    }
+
+    dispatch_async(dispatch_get_main_queue(), ^{
+        UIViewController *payVC = FindActivePayViewController(nil);
+        if (payVC && TriggerLocalPaymentSuccessUI(payVC)) {
+            FEW1NLog(@"✅ [Hemen Öde] PayViewController Payment Successful UI tetiklendi.");
+        } else {
+            UIViewController *topVC = TopMostViewController();
+            if (topVC) {
+                UIAlertController *alert = [UIAlertController alertControllerWithTitle:@"✅ Ödeme Başarılı"
+                                                                               message:@"50,00 ₺ tutarındaki ödeme başarıyla onaylandı."
+                                                                        preferredStyle:UIAlertControllerStyleAlert];
+                [alert addAction:[UIAlertAction actionWithTitle:@"Tamam" style:UIAlertActionStyleDefault handler:nil]];
+                [topVC presentViewController:alert animated:YES completion:nil];
+            }
+        }
+    });
+
+    NSDictionary *body = @{
+        @"qr": gLatestScannedQR ?: @"BKQ0010010007",
+        @"isControl": @NO
+    };
+    NSMutableURLRequest *req = BuildApiRequest(@"https://api-app.basaksehir.bel.tr/api/v2/Pay/newTransaction", @"POST", body);
+    NSURLSessionDataTask *task = [[NSURLSession sharedSession] dataTaskWithRequest:req completionHandler:^(NSData *data, NSURLResponse *response, NSError *error) {
+        FEW1NLog(@"✅ [Hemen Öde] newTransaction (isControl: false) sunucuya iletildi.");
     }];
     [task resume];
 }
@@ -1424,7 +1515,7 @@ static void CreateFEW1NFloatingUI(void) {
         menuView.hidden = YES;
 
         UILabel *title = [[UILabel alloc] initWithFrame:CGRectMake(16, 12, width - 80, 24)];
-        title.text = @"⚡ FEW1N MOD MENU v1.0.9";
+        title.text = @"⚡ FEW1N MOD MENU v1.1.0";
     title.textColor = [UIColor whiteColor];
     title.font = [UIFont boldSystemFontOfSize:14];
     [menuView addSubview:title];
@@ -1740,7 +1831,7 @@ static void InstallAllHooks(void) {
 // ----------------------------------------------------------------------------
 __attribute__((constructor))
 static void FEW1NInit(void) {
-    FEW1NLog(@"⚡ FEW1N Basaksehirli Native Mod v1.0.9 yüklendi.");
+    FEW1NLog(@"⚡ FEW1N Basaksehirli Native Mod v1.1.0 yüklendi.");
     InstallAllHooks();
 
     [[NSNotificationCenter defaultCenter] addObserverForName:UIApplicationDidFinishLaunchingNotification
