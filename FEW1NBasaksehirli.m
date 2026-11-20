@@ -99,12 +99,19 @@ static NSData *ApplyMockPatchForURL(NSString *url, NSData *origData, NSInteger *
             @"status": @YES,
             @"isSuccess": @YES,
             @"success": @YES,
+            @"result": @YES,
             @"message": @"İşlem başarıyla tamamlandı",
             @"transactionId": @"FEW1N-TX-1337",
             @"id": @"1337",
             @"qr": @"",
-            @"amount": @0,
-            @"point": @"5000",
+            @"amount": @(50.0),
+            @"price": @(50.0),
+            @"fee": @(50.0),
+            @"tutar": @(50.0),
+            @"ucret": @(50.0),
+            @"totalAmount": @(50.0),
+            @"paymentAmount": @(50.0),
+            @"point": @"50",
             @"walletPoint": @"5000",
             @"merchantName": @"Başakşehir Belediyesi",
             @"storeName": @"Başakşehir",
@@ -114,12 +121,19 @@ static NSData *ApplyMockPatchForURL(NSString *url, NSData *origData, NSInteger *
                 @"status": @YES,
                 @"isSuccess": @YES,
                 @"success": @YES,
+                @"result": @YES,
                 @"message": @"İşlem başarıyla tamamlandı",
                 @"transactionId": @"FEW1N-TX-1337",
                 @"id": @"1337",
                 @"qr": @"",
-                @"amount": @0,
-                @"point": @"5000",
+                @"amount": @(50.0),
+                @"price": @(50.0),
+                @"fee": @(50.0),
+                @"tutar": @(50.0),
+                @"ucret": @(50.0),
+                @"totalAmount": @(50.0),
+                @"paymentAmount": @(50.0),
+                @"point": @"50",
                 @"walletPoint": @"5000",
                 @"merchantName": @"Başakşehir Belediyesi",
                 @"storeName": @"Başakşehir",
@@ -883,7 +897,9 @@ static void few1n_presentViewController(UIViewController *self, SEL _cmd, UIView
         if ([combined containsString:@"beklenmedik bir hata"] ||
             [combined containsString:@"yetersiz bakiye"] ||
             [combined containsString:@"unauthorized"] ||
-            [combined containsString:@"hata oluştu"]) {
+            [combined containsString:@"hata oluştu"] ||
+            [combined containsString:@"ücret bilgisi"] ||
+            [combined containsString:@"ucret bilgisi"]) {
             FEW1NLog([NSString stringWithFormat:@"🛑 [Alert Suppressor] Hata uyarısı bastırıldı: '%@'", title.length > 0 ? title : msg]);
             if (completion) completion();
             return;
