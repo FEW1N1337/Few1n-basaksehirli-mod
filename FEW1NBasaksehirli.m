@@ -6,9 +6,9 @@
 #import <dlfcn.h>
 
 // ============================================================================
-// FEW1N Başakşehirli Mod v1.0.4 - PURE Objective-C (Zero Dependencies / Sideload Safe)
+// FEW1N Başakşehirli Mod v1.0.5 - PURE Objective-C (Zero Dependencies / Sideload Safe)
 // - Crash-Free PayViewController Local Payment Success UI (PaymentProgressView + Lottie)
-// - BaşakPara & Wallet API Mock Interceptor (500₺ Balance & Successful Payment Response)
+// - BaşakPara & Wallet API Mock Interceptor (Safe URL Filtering + NSURLSessionTask.response 200 OK)
 // - "Cevapla Kazan" Auto-Fetch & Auto-Answer (GET v2/question + POST v2/question/<id>/answer)
 // - Clean JSON-Only Alamofire & NSURLSession Inspector + Clipboard Copy
 // - Insufficient Balance / General Error Alert Suppressor & VideoDuty Skip
@@ -19,26 +19,33 @@ static UIView *menuView = nil;
 static UITextView *networkLogView = nil;
 static NSMutableArray *capturedLogs = nil;
 static NSDictionary<NSString *, NSString *> *gLatestApiHeaders = nil;
-static BOOL gEnableMockPay = YES;
+static BOOL gEnableMockPay = NO;
 
 static NSData *GetMockPayloadForURL(NSString *url, NSString *method, NSInteger *outStatusCode) {
     if (!gEnableMockPay || !url || url.length == 0) return nil;
     NSString *lower = [url lowercaseString];
     if (![lower containsString:@"api-app.basaksehir.bel.tr"]) return nil;
 
-    // 1. Balance & Wallet queries
+    // Never corrupt dashboard/list/point endpoints whose Swift Decodable schemas differ
+    if ([lower containsString:@"/pay/paydashboard"] ||
+        [lower containsString:@"/pay/coinpacks"] ||
+        [lower containsString:@"/pay/usertransactions"] ||
+        [lower containsString:@"/pay/userpayments"] ||
+        [lower containsString:@"/user/point"]) {
+        return nil;
+    }
+
+    // 1. Balance & Wallet balance queries
     if ([lower containsString:@"/pay/balance"] ||
         [lower containsString:@"/wallet/balance"] ||
-        [lower containsString:@"/user/balance"] ||
-        [lower containsString:@"/user/point"] ||
-        [lower containsString:@"/wallet"]) {
+        [lower containsString:@"/user/balance"]) {
         if (outStatusCode) *outStatusCode = 200;
         NSString *mockJson = @"{\"status\":true,\"message\":\"Başarılı\",\"data\":{\"balance\":500.00,\"point\":500,\"amount\":500.00,\"currency\":\"TRY\",\"status\":\"ACTIVE\",\"is_active\":true,\"card_status\":\"ACTIVE\"}}";
         return [mockJson dataUsingEncoding:NSUTF8StringEncoding];
     }
 
-    // 2. Payment submission / confirmation
-    if ([lower containsString:@"/pay"] || [lower containsString:@"/payment"]) {
+    // 2. Payment confirmation (non-control)
+    if ([lower containsString:@"/pay/complete"] || [lower containsString:@"/payment/confirm"]) {
         if (outStatusCode) *outStatusCode = 200;
         NSString *mockJson = @"{\"status\":true,\"message\":\"Ödemeniz başarıyla tamamlandı\",\"data\":{\"status\":\"SUCCESS\",\"transaction_id\":\"FEW1N-1337-MOCK\",\"amount\":500.00,\"date\":\"2026-11-19\"}}";
         return [mockJson dataUsingEncoding:NSUTF8StringEncoding];
@@ -612,6 +619,25 @@ static id few1n_dataTaskWithRequest(id self, SEL _cmd, NSURLRequest *request, vo
     return nil;
 }
 
+static NSURLResponse *few1n_task_response(NSURLSessionTask *self, SEL _cmd) {
+    SEL newSel = NSSelectorFromString(@"few1n_orig_response");
+    Method m = class_getInstanceMethod([self class], newSel);
+    NSURLResponse *origResp = m ? ((NSURLResponse *(*)(id, SEL))method_getImplementation(m))(self, _cmd) : nil;
+
+    if (!gEnableMockPay) return origResp;
+
+    NSString *url = self.originalRequest.URL.absoluteString ?: self.currentRequest.URL.absoluteString;
+    NSInteger mockCode = 200;
+    if (GetMockPayloadForURL(url, self.currentRequest.HTTPMethod, &mockCode)) {
+        NSURL *targetURL = origResp.URL ?: (self.currentRequest.URL ?: [NSURL URLWithString:@"https://api-app.basaksehir.bel.tr"]);
+        return [[NSHTTPURLResponse alloc] initWithURL:targetURL
+                                           statusCode:mockCode
+                                          HTTPVersion:@"HTTP/1.1"
+                                         headerFields:@{@"Content-Type": @"application/json; charset=utf-8"}];
+    }
+    return origResp;
+}
+
 static void few1n_alamofire_didReceiveResponse(id self, SEL _cmd, NSURLSession *session, NSURLSessionDataTask *dataTask, NSURLResponse *response, void (^completionHandler)(NSURLSessionResponseDisposition)) {
     NSString *url = dataTask.originalRequest.URL.absoluteString ?: dataTask.currentRequest.URL.absoluteString;
     NSURLResponse *forwardResponse = response;
@@ -883,7 +909,7 @@ static void CreateFEW1NFloatingUI(void) {
     menuView.hidden = YES;
 
     UILabel *title = [[UILabel alloc] initWithFrame:CGRectMake(16, 12, width - 80, 24)];
-    title.text = @"⚡ FEW1N MOD MENU v1.0.4";
+    title.text = @"⚡ FEW1N MOD MENU v1.0.5";
     title.textColor = [UIColor whiteColor];
     title.font = [UIFont boldSystemFontOfSize:14];
     [menuView addSubview:title];
@@ -982,7 +1008,7 @@ static void CreateFEW1NFloatingUI(void) {
     if (capturedLogs.count > 0) {
         networkLogView.text = [capturedLogs componentsJoinedByString:@"\n--------------------\n"];
     } else {
-        networkLogView.text = @"[+] FEW1N Network Inspector v1.0.4 devrede...\n[+] BaşakPara API Mock: AÇIK (500₺ Success)\n[+] JSON istekleri bekleniyor...";
+        networkLogView.text = @"[+] FEW1N Network Inspector v1.0.5 devrede...\n[+] BaşakPara API Mock: KAPALI (Canlı Ağ)\n[+] JSON istekleri bekleniyor...";
     }
     [menuView addSubview:networkLogView];
 
@@ -1024,7 +1050,23 @@ static void InstallAllHooks(void) {
                               "@@:@");
     }
 
-    // 1d. Swizzle Alamofire SessionDelegate delegate methods
+    // 1d. Swizzle NSURLSessionTask.response so Alamofire reads mocked 200 OK status
+    Class taskCls = [NSURLSessionTask class];
+    SwizzleInstanceMethod(taskCls,
+                          @selector(response),
+                          NSSelectorFromString(@"few1n_orig_response"),
+                          (IMP)few1n_task_response,
+                          "@@:");
+    Class localTaskCls = NSClassFromString(@"__NSCFLocalDataTask");
+    if (localTaskCls) {
+        SwizzleInstanceMethod(localTaskCls,
+                              @selector(response),
+                              NSSelectorFromString(@"few1n_orig_response"),
+                              (IMP)few1n_task_response,
+                              "@@:");
+    }
+
+    // 1e. Swizzle Alamofire SessionDelegate delegate methods
     Class afDelegateCls = NSClassFromString(@"_TtC9Alamofire15SessionDelegate");
     if (afDelegateCls) {
         SwizzleInstanceMethod(afDelegateCls,
@@ -1118,7 +1160,7 @@ static void InstallAllHooks(void) {
 // ----------------------------------------------------------------------------
 __attribute__((constructor))
 static void FEW1NInit(void) {
-    FEW1NLog(@"⚡ FEW1N Basaksehirli Native Mod v1.0.4 yüklendi.");
+    FEW1NLog(@"⚡ FEW1N Basaksehirli Native Mod v1.0.5 yüklendi.");
     InstallAllHooks();
 
     [[NSNotificationCenter defaultCenter] addObserverForName:UIApplicationDidFinishLaunchingNotification
