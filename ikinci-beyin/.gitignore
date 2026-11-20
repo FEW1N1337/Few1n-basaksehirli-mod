@@ -1,0 +1,5 @@
+.beyin-runtime.json
+.beyin-note-write/
+.claude/settings.local.json
+__pycache__/
+*.pyc
