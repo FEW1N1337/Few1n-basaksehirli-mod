@@ -6,11 +6,12 @@
 #import <dlfcn.h>
 
 // ============================================================================
-// FEW1N Başakşehirli Mod v1.0.6 - PURE Objective-C (Zero Dependencies / Sideload Safe)
+// FEW1N Başakşehirli Mod v1.0.7 - PURE Objective-C (Zero Dependencies / Sideload Safe)
+// - Pay/newTransaction QR & Payment Flow Solver (Auto-Mock & Local Success Animation)
 // - Crash-Free PayViewController Local Payment Success UI (PaymentProgressView + Lottie)
 // - BaşakPara Schema-Safe Mock (Patches GetUserWallet/payDashboard/userPayments -> 5000)
 // - "Cevapla Kazan" Auto-Fetch & Auto-Answer (GET v2/question + POST v2/question/<id>/answer)
-// - Clean JSON-Only Alamofire & NSURLSession Inspector + Clipboard Copy
+// - Clean JSON-Only Alamofire & NSURLSession Inspector + Live Clipboard Copy
 // - Insufficient Balance / General Error Alert Suppressor & VideoDuty Skip
 // ============================================================================
 
@@ -28,7 +29,9 @@ static BOOL ShouldMockURL(NSString *url) {
 
     return [lower containsString:@"/pay/getuserwallet"] ||
            [lower containsString:@"/pay/paydashboard"] ||
-           [lower containsString:@"/pay/userpayments"];
+           [lower containsString:@"/pay/userpayments"] ||
+           [lower containsString:@"/pay/newtransaction"] ||
+           [lower containsString:@"/pay/newpayment"];
 }
 
 static NSData *ApplyMockPatchForURL(NSString *url, NSData *origData, NSInteger *outStatusCode) {
@@ -72,6 +75,79 @@ static NSData *ApplyMockPatchForURL(NSString *url, NSData *origData, NSInteger *
             }
         }
         return nil;
+    }
+
+    if ([lower containsString:@"/pay/newtransaction"]) {
+        if (outStatusCode) *outStatusCode = 200;
+        if (origData && origData.length > 0) {
+            NSError *err = nil;
+            id jsonObj = [NSJSONSerialization JSONObjectWithData:origData options:NSJSONReadingMutableContainers error:&err];
+            if (!err && [jsonObj isKindOfClass:[NSMutableDictionary class]]) {
+                NSMutableDictionary *dict = (NSMutableDictionary *)jsonObj;
+                if (!dict[@"errorMessageForUser"] && !dict[@"errorMessageForDebug"]) {
+                    if (dict[@"point"]) dict[@"point"] = @"5000";
+                    if (dict[@"walletPoint"]) dict[@"walletPoint"] = @"5000";
+                    dict[@"status"] = @YES;
+                    dict[@"isSuccess"] = @YES;
+                    dict[@"message"] = @"İşlem başarılı";
+                    NSData *patched = [NSJSONSerialization dataWithJSONObject:dict options:0 error:&err];
+                    if (patched && !err) return patched;
+                }
+            }
+        }
+        NSDictionary *mockTx = @{
+            @"status": @YES,
+            @"isSuccess": @YES,
+            @"success": @YES,
+            @"message": @"İşlem başarıyla tamamlandı",
+            @"transactionId": @"FEW1N-TX-1337",
+            @"id": @"1337",
+            @"qr": @"",
+            @"amount": @0,
+            @"point": @"5000",
+            @"walletPoint": @"5000",
+            @"merchantName": @"Başakşehir Belediyesi",
+            @"storeName": @"Başakşehir",
+            @"title": @"Başakşehir Belediyesi",
+            @"date": @"2026-11-20",
+            @"data": @{
+                @"status": @YES,
+                @"isSuccess": @YES,
+                @"success": @YES,
+                @"message": @"İşlem başarıyla tamamlandı",
+                @"transactionId": @"FEW1N-TX-1337",
+                @"id": @"1337",
+                @"qr": @"",
+                @"amount": @0,
+                @"point": @"5000",
+                @"walletPoint": @"5000",
+                @"merchantName": @"Başakşehir Belediyesi",
+                @"storeName": @"Başakşehir",
+                @"title": @"Başakşehir Belediyesi",
+                @"date": @"2026-11-20"
+            }
+        };
+        NSError *err = nil;
+        return [NSJSONSerialization dataWithJSONObject:mockTx options:0 error:&err];
+    }
+
+    if ([lower containsString:@"/pay/newpayment"]) {
+        if (outStatusCode) *outStatusCode = 200;
+        NSDictionary *mockPay = @{
+            @"status": @YES,
+            @"isSuccess": @YES,
+            @"success": @YES,
+            @"message": @"Ödeme başarıyla tamamlandı",
+            @"point": @"5000",
+            @"walletPoint": @"5000",
+            @"data": @{
+                @"status": @YES,
+                @"isSuccess": @YES,
+                @"point": @"5000"
+            }
+        };
+        NSError *err = nil;
+        return [NSJSONSerialization dataWithJSONObject:mockPay options:0 error:&err];
     }
 
     return nil;
@@ -617,7 +693,26 @@ static id few1n_dataTaskWithRequest(id self, SEL _cmd, NSURLRequest *request, vo
                                                     statusCode:mockCode
                                                    HTTPVersion:@"HTTP/1.1"
                                                   headerFields:@{@"Content-Type": @"application/json; charset=utf-8"}];
-            FEW1NLog([NSString stringWithFormat:@"🎭 [Mock URLSession] %@ -> 5000 BaşakPara işlendi.", url]);
+            if ([url.lowercaseString containsString:@"/pay/newtransaction"]) {
+                BOOL isControl = NO;
+                if (request.HTTPBody) {
+                    NSString *bStr = [[NSString alloc] initWithData:request.HTTPBody encoding:NSUTF8StringEncoding];
+                    if (bStr && [bStr containsString:@"\"isControl\":true"]) isControl = YES;
+                }
+                if (isControl) {
+                    FEW1NLog(@"📷 [newTransaction URLSession] QR kontrol isteği (isControl: true) simüle edildi.");
+                } else {
+                    FEW1NLog(@"💸 [newTransaction URLSession] Ödeme işlemi onaylandı (isControl: false)! Başarı animasyonu tetikleniyor...");
+                    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.35 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+                        UIViewController *payVC = FindActivePayViewController(nil);
+                        if (payVC) {
+                            TriggerLocalPaymentSuccessUI(payVC);
+                        }
+                    });
+                }
+            } else {
+                FEW1NLog([NSString stringWithFormat:@"🎭 [Mock URLSession] %@ -> 5000 BaşakPara işlendi.", url]);
+            }
         }
 
         if (ShouldLogURL(url)) {
@@ -687,7 +782,26 @@ static void few1n_alamofire_didReceiveData(id self, SEL _cmd, NSURLSession *sess
     NSData *mockPayload = ApplyMockPatchForURL(url, data, &mockCode);
     if (mockPayload) {
         forwardData = mockPayload;
-        FEW1NLog([NSString stringWithFormat:@"🎭 [AF Mock] 5000 BaşakPara enjekte edildi: %@", url ?: @"?"]);
+        if ([url.lowercaseString containsString:@"/pay/newtransaction"]) {
+            BOOL isControl = NO;
+            if (dataTask.originalRequest.HTTPBody) {
+                NSString *bStr = [[NSString alloc] initWithData:dataTask.originalRequest.HTTPBody encoding:NSUTF8StringEncoding];
+                if (bStr && [bStr containsString:@"\"isControl\":true"]) isControl = YES;
+            }
+            if (isControl) {
+                FEW1NLog(@"📷 [newTransaction AF] QR kontrol isteği (isControl: true) simüle edildi.");
+            } else {
+                FEW1NLog(@"💸 [newTransaction AF] Ödeme işlemi onaylandı (isControl: false)! Başarı animasyonu tetikleniyor...");
+                dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.35 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+                    UIViewController *payVC = FindActivePayViewController(nil);
+                    if (payVC) {
+                        TriggerLocalPaymentSuccessUI(payVC);
+                    }
+                });
+            }
+        } else {
+            FEW1NLog([NSString stringWithFormat:@"🎭 [AF Mock] 5000 BaşakPara enjekte edildi: %@", url ?: @"?"]);
+        }
     }
 
     if (ShouldLogURL(url)) {
@@ -758,6 +872,28 @@ static void few1n_showInsufficientBalance(id self, SEL _cmd, id arg1) {
 
 static void few1n_showGeneralErrorAlert(id self, SEL _cmd, id arg1) {
     FEW1NLog(@"[Hook] General Error alert engellendi.");
+}
+
+static void few1n_presentViewController(UIViewController *self, SEL _cmd, UIViewController *vcToPresent, BOOL animated, void (^completion)(void)) {
+    if ([vcToPresent isKindOfClass:[UIAlertController class]]) {
+        UIAlertController *alert = (UIAlertController *)vcToPresent;
+        NSString *title = alert.title ?: @"";
+        NSString *msg = alert.message ?: @"";
+        NSString *combined = [NSString stringWithFormat:@"%@ %@", title, msg].lowercaseString;
+        if ([combined containsString:@"beklenmedik bir hata"] ||
+            [combined containsString:@"yetersiz bakiye"] ||
+            [combined containsString:@"unauthorized"] ||
+            [combined containsString:@"hata oluştu"]) {
+            FEW1NLog([NSString stringWithFormat:@"🛑 [Alert Suppressor] Hata uyarısı bastırıldı: '%@'", title.length > 0 ? title : msg]);
+            if (completion) completion();
+            return;
+        }
+    }
+    SEL newSel = NSSelectorFromString(@"few1n_orig_presentViewController:animated:completion:");
+    Method m = class_getInstanceMethod([UIViewController class], newSel);
+    if (m) {
+        ((void (*)(id, SEL, id, BOOL, id))method_getImplementation(m))(self, _cmd, vcToPresent, animated, completion);
+    }
 }
 
 // ----------------------------------------------------------------------------
@@ -842,6 +978,7 @@ static void ToggleMenu(void) {
 - (void)runCevaplaKazan;
 - (void)copyLogs;
 - (void)toggleMockPay;
+- (void)testNewTransaction;
 @end
 
 @implementation UIButton (FEW1NActions)
@@ -888,14 +1025,28 @@ static void ToggleMenu(void) {
     UIButton *btn = (UIButton *)[menuView viewWithTag:777];
     if ([btn isKindOfClass:[UIButton class]]) {
         if (gEnableMockPay) {
-            [btn setTitle:@"🎭 BaşakPara Mock: AÇIK (5000)" forState:UIControlStateNormal];
+            [btn setTitle:@"🎭 Mock: AÇIK" forState:UIControlStateNormal];
             btn.backgroundColor = [UIColor colorWithRed:0.15 green:0.65 blue:0.35 alpha:0.9];
         } else {
-            [btn setTitle:@"🎭 BaşakPara Mock: KAPALI (Ağ)" forState:UIControlStateNormal];
+            [btn setTitle:@"🎭 Mock: KAPALI" forState:UIControlStateNormal];
             btn.backgroundColor = [UIColor colorWithWhite:0.25 alpha:0.85];
         }
     }
-    FEW1NLog([NSString stringWithFormat:@"🎭 BaşakPara API Mock: %@", gEnableMockPay ? @"AÇIK (5000)" : @"KAPALI"]);
+    FEW1NLog([NSString stringWithFormat:@"🎭 BaşakPara & newTransaction Mock: %@", gEnableMockPay ? @"AÇIK" : @"KAPALI"]);
+}
+- (void)testNewTransaction {
+    FEW1NLog(@"⚡ [Test] /Pay/newTransaction isteği gönderiliyor...");
+    NSDictionary *body = @{
+        @"qr": @"FEW1N-PAY-QR-1337",
+        @"isControl": @NO
+    };
+    NSMutableURLRequest *req = BuildApiRequest(@"https://api-app.basaksehir.bel.tr/api/v2/Pay/newTransaction", @"POST", body);
+    NSURLSessionDataTask *task = [[NSURLSession sharedSession] dataTaskWithRequest:req completionHandler:^(NSData *data, NSURLResponse *response, NSError *error) {
+        NSInteger code = [response isKindOfClass:[NSHTTPURLResponse class]] ? ((NSHTTPURLResponse *)response).statusCode : 0;
+        NSString *bodyStr = data ? ([[NSString alloc] initWithData:data encoding:NSUTF8StringEncoding] ?: @"") : @"";
+        FEW1NLog([NSString stringWithFormat:@"🎯 [newTransaction Test Sonucu] HTTP %ld:\n%@", (long)code, bodyStr]);
+    }];
+    [task resume];
 }
 @end
 
@@ -928,7 +1079,7 @@ static void CreateFEW1NFloatingUI(void) {
     menuView.hidden = YES;
 
     UILabel *title = [[UILabel alloc] initWithFrame:CGRectMake(16, 12, width - 80, 24)];
-    title.text = @"⚡ FEW1N MOD MENU v1.0.6";
+    title.text = @"⚡ FEW1N MOD MENU v1.0.7";
     title.textColor = [UIColor whiteColor];
     title.font = [UIFont boldSystemFontOfSize:14];
     [menuView addSubview:title];
@@ -1002,15 +1153,25 @@ static void CreateFEW1NFloatingUI(void) {
     [menuView addSubview:btnCopy];
 
     UIButton *btnMockPay = [UIButton buttonWithType:UIButtonTypeSystem];
-    btnMockPay.frame = CGRectMake(16, 161, width - 32, 32);
+    btnMockPay.frame = CGRectMake(16, 161, halfW, 32);
     btnMockPay.tag = 777;
     btnMockPay.backgroundColor = gEnableMockPay ? [UIColor colorWithRed:0.15 green:0.65 blue:0.35 alpha:0.9] : [UIColor colorWithWhite:0.25 alpha:0.85];
-    [btnMockPay setTitle:gEnableMockPay ? @"🎭 BaşakPara Mock: AÇIK (5000)" : @"🎭 BaşakPara Mock: KAPALI (Ağ)" forState:UIControlStateNormal];
+    [btnMockPay setTitle:gEnableMockPay ? @"🎭 Mock: AÇIK" : @"🎭 Mock: KAPALI" forState:UIControlStateNormal];
     [btnMockPay setTitleColor:[UIColor whiteColor] forState:UIControlStateNormal];
     btnMockPay.titleLabel.font = [UIFont boldSystemFontOfSize:12];
     btnMockPay.layer.cornerRadius = 6;
     [btnMockPay addTarget:floatingBtn action:@selector(toggleMockPay) forControlEvents:UIControlEventTouchUpInside];
     [menuView addSubview:btnMockPay];
+
+    UIButton *btnTestTx = [UIButton buttonWithType:UIButtonTypeSystem];
+    btnTestTx.frame = CGRectMake(24 + halfW, 161, halfW, 32);
+    btnTestTx.backgroundColor = [UIColor colorWithRed:0.85 green:0.45 blue:0.1 alpha:0.9];
+    [btnTestTx setTitle:@"⚡ newTransaction" forState:UIControlStateNormal];
+    [btnTestTx setTitleColor:[UIColor whiteColor] forState:UIControlStateNormal];
+    btnTestTx.titleLabel.font = [UIFont boldSystemFontOfSize:12];
+    btnTestTx.layer.cornerRadius = 6;
+    [btnTestTx addTarget:floatingBtn action:@selector(testNewTransaction) forControlEvents:UIControlEventTouchUpInside];
+    [menuView addSubview:btnTestTx];
 
     UILabel *logLabel = [[UILabel alloc] initWithFrame:CGRectMake(16, 199, width - 32, 18)];
     logLabel.text = @"📡 CANLI JSON AĞ TRAFİĞİ (Alamofire / v2/Pay / Question):";
@@ -1027,7 +1188,7 @@ static void CreateFEW1NFloatingUI(void) {
     if (capturedLogs.count > 0) {
         networkLogView.text = [capturedLogs componentsJoinedByString:@"\n--------------------\n"];
     } else {
-        networkLogView.text = @"[+] FEW1N Network Inspector v1.0.6 devrede...\n[+] BaşakPara Mock: AÇIK (5000 BaşakPara)\n[+] JSON istekleri bekleniyor...";
+        networkLogView.text = @"[+] FEW1N Network Inspector v1.0.7 devrede...\n[+] BaşakPara & newTransaction Mock: AÇIK\n[+] JSON istekleri bekleniyor...";
     }
     [menuView addSubview:networkLogView];
 
@@ -1125,7 +1286,7 @@ static void InstallAllHooks(void) {
                               "v@:");
     }
 
-    // 4. Swizzle PayAlertManager
+    // 4. Swizzle PayAlertManager & Error Alert Suppressors
     Class alertCls = NSClassFromString(@"_TtC12basaksehirli15PayAlertManager");
     if (alertCls) {
         SwizzleClassMethod(alertCls,
@@ -1139,7 +1300,29 @@ static void InstallAllHooks(void) {
                            NSSelectorFromString(@"few1n_orig_showGeneralErrorAlert:"),
                            (IMP)few1n_showGeneralErrorAlert,
                            "v@:@");
+
+        // Dynamically find and suppress any additional error/alert class methods
+        Class metaCls = object_getClass((id)alertCls);
+        unsigned int methodCount = 0;
+        Method *methods = class_copyMethodList(metaCls, &methodCount);
+        if (methods) {
+            for (unsigned int i = 0; i < methodCount; i++) {
+                SEL sel = method_getName(methods[i]);
+                NSString *selName = NSStringFromSelector(sel);
+                if ([selName containsString:@"Error"] || [selName containsString:@"Insufficient"] || [selName containsString:@"Fail"]) {
+                    class_replaceMethod(metaCls, sel, (IMP)few1n_showGeneralErrorAlert, "v@:@");
+                }
+            }
+            free(methods);
+        }
     }
+
+    // 4b. Global UIAlertController error suppressor
+    SwizzleInstanceMethod([UIViewController class],
+                          @selector(presentViewController:animated:completion:),
+                          NSSelectorFromString(@"few1n_orig_presentViewController:animated:completion:"),
+                          (IMP)few1n_presentViewController,
+                          "v@:@B@");
 
     // 5. Swizzle PayPaymentModalView (actual UIKit target for payment modal button)
     Class modalCls = NSClassFromString(@"_TtC12basaksehirli19PayPaymentModalView");
@@ -1179,13 +1362,13 @@ static void InstallAllHooks(void) {
 // ----------------------------------------------------------------------------
 __attribute__((constructor))
 static void FEW1NInit(void) {
-    FEW1NLog(@"⚡ FEW1N Basaksehirli Native Mod v1.0.6 yüklendi.");
+    FEW1NLog(@"⚡ FEW1N Basaksehirli Native Mod v1.0.7 yüklendi.");
     InstallAllHooks();
 
     [[NSNotificationCenter defaultCenter] addObserverForName:UIApplicationDidFinishLaunchingNotification
                                                       object:nil
-                                                       queue:[NSOperationQueue mainQueue]
-                                                  usingBlock:^(NSNotification * _Nonnull note) {
+                                                        queue:[NSOperationQueue mainQueue]
+                                                   usingBlock:^(NSNotification * _Nonnull note) {
         InstallAllHooks();
         dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(1.5 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
             InstallAllHooks();
