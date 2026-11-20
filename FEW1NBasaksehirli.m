@@ -1478,6 +1478,7 @@ static void CreateFEW1NFloatingUI(void) {
         networkLogView.text = @"[+] FEW1N Network Inspector v1.0.8 devrede...\n[+] BaşakPara & newTransaction Mock: AÇIK\n[+] JSON istekleri bekleniyor...";
     }
     [menuView addSubview:networkLogView];
+    }
 
     if (menuView.superview != container) {
         [menuView removeFromSuperview];
