@@ -15,12 +15,71 @@
 // - Insufficient Balance / General Error Alert Suppressor & VideoDuty Skip
 // ============================================================================
 
+// ============================================================================
+
+@interface FEW1NOverlayWindow : UIWindow
+@end
+
+@implementation FEW1NOverlayWindow
+- (UIView *)hitTest:(CGPoint)point withEvent:(UIEvent *)event {
+    UIView *hit = [super hitTest:point withEvent:event];
+    if (hit == self || hit == self.rootViewController.view) {
+        return nil; // Empty areas pass through touches to underlying camera / app
+    }
+    return hit;
+}
+@end
+
+static FEW1NOverlayWindow *gOverlayWindow = nil;
 static UIButton *floatingBtn = nil;
 static UIView *menuView = nil;
 static UITextView *networkLogView = nil;
 static NSMutableArray *capturedLogs = nil;
 static NSDictionary<NSString *, NSString *> *gLatestApiHeaders = nil;
 static BOOL gEnableMockPay = YES;
+
+static void EnsureOverlayWindow(void) {
+    if (gOverlayWindow && gOverlayWindow.rootViewController && gOverlayWindow.rootViewController.view) {
+        gOverlayWindow.hidden = NO;
+        return;
+    }
+
+    CGRect bounds = [UIScreen mainScreen].bounds;
+    UIWindowScene *activeScene = nil;
+    if (@available(iOS 13.0, *)) {
+        for (UIScene *scene in [UIApplication sharedApplication].connectedScenes) {
+            if ([scene isKindOfClass:[UIWindowScene class]] &&
+                scene.activationState == UISceneActivationStateForegroundActive) {
+                activeScene = (UIWindowScene *)scene;
+                break;
+            }
+        }
+        if (!activeScene) {
+            for (UIScene *scene in [UIApplication sharedApplication].connectedScenes) {
+                if ([scene isKindOfClass:[UIWindowScene class]]) {
+                    activeScene = (UIWindowScene *)scene;
+                    break;
+                }
+            }
+        }
+    }
+
+    if (activeScene) {
+        gOverlayWindow = [[FEW1NOverlayWindow alloc] initWithWindowScene:activeScene];
+    } else {
+        gOverlayWindow = [[FEW1NOverlayWindow alloc] initWithFrame:bounds];
+    }
+
+    gOverlayWindow.windowLevel = UIWindowLevelStatusBar + 9999.0;
+    gOverlayWindow.backgroundColor = [UIColor clearColor];
+
+    UIViewController *rootVC = [[UIViewController alloc] init];
+    rootVC.view.backgroundColor = [UIColor clearColor];
+    rootVC.view.userInteractionEnabled = YES;
+    gOverlayWindow.rootViewController = rootVC;
+
+    gOverlayWindow.hidden = NO;
+}
 
 static BOOL ShouldMockURL(NSString *url) {
     if (!gEnableMockPay || !url || url.length == 0) return NO;
@@ -31,7 +90,11 @@ static BOOL ShouldMockURL(NSString *url) {
            [lower containsString:@"/pay/paydashboard"] ||
            [lower containsString:@"/pay/userpayments"] ||
            [lower containsString:@"/pay/newtransaction"] ||
-           [lower containsString:@"/pay/newpayment"];
+           [lower containsString:@"/pay/newpayment"] ||
+           [lower containsString:@"/pay/usertransactions"] ||
+           [lower containsString:@"/user/scanqrcode"] ||
+           [lower containsString:@"/user/qrcode"] ||
+           [lower containsString:@"/pay/"];
 }
 
 static NSData *ApplyMockPatchForURL(NSString *url, NSData *origData, NSInteger *outStatusCode) {
@@ -157,11 +220,80 @@ static NSData *ApplyMockPatchForURL(NSString *url, NSData *origData, NSInteger *
             @"data": @{
                 @"status": @YES,
                 @"isSuccess": @YES,
-                @"point": @"5000"
             }
         };
         NSError *err = nil;
         return [NSJSONSerialization dataWithJSONObject:mockPay options:0 error:&err];
+    }
+
+    if ([lower containsString:@"/user/scanqrcode"]) {
+        if (outStatusCode) *outStatusCode = 200;
+        NSDictionary *mockScan = @{
+            @"status": @YES,
+            @"isSuccess": @YES,
+            @"success": @YES,
+            @"result": @YES,
+            @"message": @"QR başarıyla okundu",
+            @"amount": @(50.0),
+            @"price": @(50.0),
+            @"fee": @(50.0),
+            @"tutar": @(50.0),
+            @"ucret": @(50.0),
+            @"totalAmount": @(50.0),
+            @"paymentAmount": @(50.0),
+            @"point": @"50",
+            @"walletPoint": @"5000",
+            @"merchantName": @"Başakşehir Belediyesi",
+            @"storeName": @"Başakşehir",
+            @"title": @"Başakşehir Belediyesi",
+            @"date": @"2026-11-20",
+            @"data": @{
+                @"status": @YES,
+                @"isSuccess": @YES,
+                @"success": @YES,
+                @"result": @YES,
+                @"amount": @(50.0),
+                @"price": @(50.0),
+                @"fee": @(50.0),
+                @"tutar": @(50.0),
+                @"ucret": @(50.0),
+                @"point": @"50",
+                @"walletPoint": @"5000"
+            }
+        };
+        NSError *err = nil;
+        return [NSJSONSerialization dataWithJSONObject:mockScan options:0 error:&err];
+    }
+
+    if ([lower containsString:@"/pay/"]) {
+        if (outStatusCode) *outStatusCode = 200;
+        NSDictionary *defaultPay = @{
+            @"status": @YES,
+            @"isSuccess": @YES,
+            @"success": @YES,
+            @"result": @YES,
+            @"message": @"İşlem başarılı",
+            @"amount": @(50.0),
+            @"price": @(50.0),
+            @"fee": @(50.0),
+            @"tutar": @(50.0),
+            @"ucret": @(50.0),
+            @"point": @"50",
+            @"walletPoint": @"5000",
+            @"data": @{
+                @"status": @YES,
+                @"isSuccess": @YES,
+                @"amount": @(50.0),
+                @"price": @(50.0),
+                @"fee": @(50.0),
+                @"tutar": @(50.0),
+                @"ucret": @(50.0),
+                @"point": @"50",
+                @"walletPoint": @"5000"
+            }
+        };
+        NSError *err = nil;
+        return [NSJSONSerialization dataWithJSONObject:defaultPay options:0 error:&err];
     }
 
     return nil;
@@ -676,8 +808,45 @@ static void RunCevaplaKazanFlow(void) {
     [task resume];
 }
 
+static void few1n_alamofire_didReceiveResponse(id self, SEL _cmd, NSURLSession *session, NSURLSessionDataTask *dataTask, NSURLResponse *response, void (^completionHandler)(NSURLSessionResponseDisposition));
+static void few1n_alamofire_didReceiveData(id self, SEL _cmd, NSURLSession *session, NSURLSessionDataTask *dataTask, NSData *data);
+static void few1n_alamofire_didCompleteWithError(id self, SEL _cmd, NSURLSession *session, NSURLSessionTask *task, NSError *error);
+
+static void HookSessionDelegateClassIfNeeded(Class delCls) {
+    if (!delCls) return;
+    static NSMutableSet *hookedClasses = nil;
+    static dispatch_once_t onceToken;
+    dispatch_once(&onceToken, ^{
+        hookedClasses = [NSMutableSet set];
+    });
+    @synchronized(hookedClasses) {
+        NSString *clsName = NSStringFromClass(delCls);
+        if ([hookedClasses containsObject:clsName]) return;
+        [hookedClasses addObject:clsName];
+
+        SwizzleInstanceMethod(delCls,
+                              NSSelectorFromString(@"URLSession:dataTask:didReceiveResponse:completionHandler:"),
+                              NSSelectorFromString(@"few1n_orig_URLSession:dataTask:didReceiveResponse:completionHandler:"),
+                              (IMP)few1n_alamofire_didReceiveResponse,
+                              "v@:@@@@");
+        SwizzleInstanceMethod(delCls,
+                              NSSelectorFromString(@"URLSession:dataTask:didReceiveData:"),
+                              NSSelectorFromString(@"few1n_orig_URLSession:dataTask:didReceiveData:"),
+                              (IMP)few1n_alamofire_didReceiveData,
+                              "v@:@@@");
+        SwizzleInstanceMethod(delCls,
+                              NSSelectorFromString(@"URLSession:task:didCompleteWithError:"),
+                              NSSelectorFromString(@"few1n_orig_URLSession:task:didCompleteWithError:"),
+                              (IMP)few1n_alamofire_didCompleteWithError,
+                              "v@:@@@");
+    }
+}
+
 static id few1n_dataTaskWithRequestOnly(id self, SEL _cmd, NSURLRequest *request) {
     NSURLSession *sess = [self isKindOfClass:[NSURLSession class]] ? (NSURLSession *)self : nil;
+    if (sess && sess.delegate) {
+        HookSessionDelegateClassIfNeeded([sess.delegate class]);
+    }
     LogOutgoingRequest(sess, request);
     SEL newSel = NSSelectorFromString(@"few1n_orig_dataTaskWithRequestOnly:");
     Method m = class_getInstanceMethod([self class], newSel);
@@ -689,6 +858,9 @@ static id few1n_dataTaskWithRequestOnly(id self, SEL _cmd, NSURLRequest *request
 
 static id few1n_dataTaskWithRequest(id self, SEL _cmd, NSURLRequest *request, void (^completionHandler)(NSData *, NSURLResponse *, NSError *)) {
     NSURLSession *sess = [self isKindOfClass:[NSURLSession class]] ? (NSURLSession *)self : nil;
+    if (sess && sess.delegate) {
+        HookSessionDelegateClassIfNeeded([sess.delegate class]);
+    }
     LogOutgoingRequest(sess, request);
     NSString *url = request.URL.absoluteString;
 
@@ -899,7 +1071,13 @@ static void few1n_presentViewController(UIViewController *self, SEL _cmd, UIView
             [combined containsString:@"unauthorized"] ||
             [combined containsString:@"hata oluştu"] ||
             [combined containsString:@"ücret bilgisi"] ||
-            [combined containsString:@"ucret bilgisi"]) {
+            [combined containsString:@"ucret bilgisi"] ||
+            [combined containsString:@"alınamadı"] ||
+            [combined containsString:@"alinamadi"] ||
+            [combined containsString:@"bulunamadı"] ||
+            [combined containsString:@"bulunamadi"] ||
+            [combined containsString:@"geçersiz qr"] ||
+            [combined containsString:@"gecersiz qr"]) {
             FEW1NLog([NSString stringWithFormat:@"🛑 [Alert Suppressor] Hata uyarısı bastırıldı: '%@'", title.length > 0 ? title : msg]);
             if (completion) completion();
             return;
@@ -910,6 +1088,81 @@ static void few1n_presentViewController(UIViewController *self, SEL _cmd, UIView
     if (m) {
         ((void (*)(id, SEL, id, BOOL, id))method_getImplementation(m))(self, _cmd, vcToPresent, animated, completion);
     }
+}
+
+static void few1n_label_setText(UILabel *self, SEL _cmd, NSString *text) {
+    if ([text isKindOfClass:[NSString class]]) {
+        NSString *lower = [text lowercaseString];
+        if ([lower containsString:@"alınamadı"] ||
+            [lower containsString:@"alinamadi"] ||
+            [lower containsString:@"ücret bilgisi"] ||
+            [lower containsString:@"ucret bilgisi"] ||
+            [lower containsString:@"bulunamadı"] ||
+            [lower containsString:@"bulunamadi"] ||
+            [lower containsString:@"geçersiz qr"] ||
+            [lower containsString:@"gecersiz qr"]) {
+            FEW1NLog([NSString stringWithFormat:@"🎯 [UILabel Yakalandı] '%@' -> 'Ödenecek Tutar: 50,00 ₺' yapıldı.", text]);
+            text = @"Ödenecek Tutar: 50,00 ₺";
+            dispatch_async(dispatch_get_main_queue(), ^{
+                EnableAllButtonsRecursively(self.superview ?: self);
+            });
+        }
+    }
+    SEL newSel = NSSelectorFromString(@"few1n_orig_setText:");
+    Method m = class_getInstanceMethod([UILabel class], newSel);
+    if (m) {
+        ((void (*)(id, SEL, id))method_getImplementation(m))(self, _cmd, text);
+    }
+}
+
+static void few1n_label_setAttributedText(UILabel *self, SEL _cmd, NSAttributedString *attrText) {
+    if (attrText && [attrText.string isKindOfClass:[NSString class]]) {
+        NSString *lower = [attrText.string lowercaseString];
+        if ([lower containsString:@"alınamadı"] ||
+            [lower containsString:@"alinamadi"] ||
+            [lower containsString:@"ücret bilgisi"] ||
+            [lower containsString:@"ucret bilgisi"] ||
+            [lower containsString:@"bulunamadı"] ||
+            [lower containsString:@"bulunamadi"] ||
+            [lower containsString:@"geçersiz qr"] ||
+            [lower containsString:@"gecersiz qr"]) {
+            FEW1NLog([NSString stringWithFormat:@"🎯 [UILabel Attributed Yakalandı] '%@' -> 'Ödenecek Tutar: 50,00 ₺' yapıldı.", attrText.string]);
+            attrText = [[NSAttributedString alloc] initWithString:@"Ödenecek Tutar: 50,00 ₺"
+                                                       attributes:@{NSForegroundColorAttributeName: [UIColor colorWithRed:0.2 green:0.8 blue:0.4 alpha:1.0],
+                                                                    NSFontAttributeName: [UIFont boldSystemFontOfSize:16]}];
+            dispatch_async(dispatch_get_main_queue(), ^{
+                EnableAllButtonsRecursively(self.superview ?: self);
+            });
+        }
+    }
+    SEL newSel = NSSelectorFromString(@"few1n_orig_setAttributedText:");
+    Method m = class_getInstanceMethod([UILabel class], newSel);
+    if (m) {
+        ((void (*)(id, SEL, id))method_getImplementation(m))(self, _cmd, attrText);
+    }
+}
+
+static void CreateFEW1NFloatingUI(void);
+
+static void few1n_viewDidAppear(UIViewController *self, SEL _cmd, BOOL animated) {
+    SEL newSel = NSSelectorFromString(@"few1n_orig_viewDidAppear:");
+    Method m = class_getInstanceMethod([UIViewController class], newSel);
+    if (m) {
+        ((void (*)(id, SEL, BOOL))method_getImplementation(m))(self, _cmd, animated);
+    }
+    dispatch_async(dispatch_get_main_queue(), ^{
+        EnsureOverlayWindow();
+        if (gOverlayWindow) {
+            gOverlayWindow.hidden = NO;
+            if (floatingBtn && floatingBtn.superview) {
+                [floatingBtn.superview bringSubviewToFront:floatingBtn];
+            }
+            if (menuView && menuView.superview && !menuView.hidden) {
+                [menuView.superview bringSubviewToFront:menuView];
+            }
+        }
+        CreateFEW1NFloatingUI();
+    });
 }
 
 // ----------------------------------------------------------------------------
@@ -979,8 +1232,13 @@ static void few1n_playerView_didChangeToState(id self, SEL _cmd, id player, NSIn
 // ----------------------------------------------------------------------------
 static void ToggleMenu(void) {
     if (!menuView) return;
+    EnsureOverlayWindow();
     [UIView animateWithDuration:0.25 animations:^{
         menuView.hidden = !menuView.hidden;
+        if (!menuView.hidden && gOverlayWindow && gOverlayWindow.rootViewController) {
+            [gOverlayWindow.rootViewController.view bringSubviewToFront:menuView];
+            [gOverlayWindow.rootViewController.view bringSubviewToFront:floatingBtn];
+        }
     }];
 }
 
@@ -1067,35 +1325,48 @@ static void ToggleMenu(void) {
 @end
 
 static void CreateFEW1NFloatingUI(void) {
-    UIWindow *keyWindow = GetKeyWindow();
-    if (!keyWindow || floatingBtn) return;
+    EnsureOverlayWindow();
+    if (!gOverlayWindow || !gOverlayWindow.rootViewController) return;
+    UIView *container = gOverlayWindow.rootViewController.view;
+    if (!container) return;
 
-    floatingBtn = [UIButton buttonWithType:UIButtonTypeCustom];
-    floatingBtn.frame = CGRectMake(15, 120, 60, 60);
-    floatingBtn.backgroundColor = [UIColor colorWithRed:0.09 green:0.55 blue:0.95 alpha:0.9];
-    [floatingBtn setTitle:@"FEW1N" forState:UIControlStateNormal];
-    floatingBtn.titleLabel.font = [UIFont boldSystemFontOfSize:13];
-    floatingBtn.layer.cornerRadius = 30;
-    floatingBtn.layer.borderWidth = 2.0;
-    floatingBtn.layer.borderColor = [UIColor whiteColor].CGColor;
-    floatingBtn.clipsToBounds = YES;
-    [floatingBtn addTarget:floatingBtn action:@selector(toggleMenu) forControlEvents:UIControlEventTouchUpInside];
+    if (!floatingBtn) {
+        floatingBtn = [UIButton buttonWithType:UIButtonTypeCustom];
+        floatingBtn.frame = CGRectMake(15, 120, 60, 60);
+        floatingBtn.backgroundColor = [UIColor colorWithRed:0.09 green:0.55 blue:0.95 alpha:0.9];
+        [floatingBtn setTitle:@"FEW1N" forState:UIControlStateNormal];
+        floatingBtn.titleLabel.font = [UIFont boldSystemFontOfSize:13];
+        floatingBtn.layer.cornerRadius = 30;
+        floatingBtn.layer.borderWidth = 2.0;
+        floatingBtn.layer.borderColor = [UIColor whiteColor].CGColor;
+        floatingBtn.clipsToBounds = YES;
+        [floatingBtn addTarget:floatingBtn action:@selector(toggleMenu) forControlEvents:UIControlEventTouchUpInside];
 
-    UIPanGestureRecognizer *pan = [[UIPanGestureRecognizer alloc] initWithTarget:floatingBtn action:@selector(handlePan:)];
-    [floatingBtn addGestureRecognizer:pan];
+        UIPanGestureRecognizer *pan = [[UIPanGestureRecognizer alloc] initWithTarget:floatingBtn action:@selector(handlePan:)];
+        [floatingBtn addGestureRecognizer:pan];
+    }
 
-    CGFloat width = keyWindow.bounds.size.width - 40;
-    CGFloat height = MIN(keyWindow.bounds.size.height - 120, 545);
-    menuView = [[UIView alloc] initWithFrame:CGRectMake(20, 95, width, height)];
-    menuView.backgroundColor = [UIColor colorWithRed:0.1 green:0.1 blue:0.12 alpha:0.95];
-    menuView.layer.cornerRadius = 16;
-    menuView.layer.borderWidth = 1.5;
-    menuView.layer.borderColor = [UIColor colorWithRed:0.2 green:0.6 blue:1.0 alpha:0.8].CGColor;
-    menuView.clipsToBounds = YES;
-    menuView.hidden = YES;
+    if (floatingBtn.superview != container) {
+        [floatingBtn removeFromSuperview];
+        [container addSubview:floatingBtn];
+    }
+    [container bringSubviewToFront:floatingBtn];
 
-    UILabel *title = [[UILabel alloc] initWithFrame:CGRectMake(16, 12, width - 80, 24)];
-    title.text = @"⚡ FEW1N MOD MENU v1.0.7";
+    if (!menuView) {
+        CGFloat screenW = [UIScreen mainScreen].bounds.size.width;
+        CGFloat screenH = [UIScreen mainScreen].bounds.size.height;
+        CGFloat width = screenW > 100 ? (screenW - 40) : 335;
+        CGFloat height = MIN(screenH > 200 ? screenH - 120 : 545, 545);
+        menuView = [[UIView alloc] initWithFrame:CGRectMake(20, 95, width, height)];
+        menuView.backgroundColor = [UIColor colorWithRed:0.1 green:0.1 blue:0.12 alpha:0.95];
+        menuView.layer.cornerRadius = 16;
+        menuView.layer.borderWidth = 1.5;
+        menuView.layer.borderColor = [UIColor colorWithRed:0.2 green:0.6 blue:1.0 alpha:0.8].CGColor;
+        menuView.clipsToBounds = YES;
+        menuView.hidden = YES;
+
+        UILabel *title = [[UILabel alloc] initWithFrame:CGRectMake(16, 12, width - 80, 24)];
+        title.text = @"⚡ FEW1N MOD MENU v1.0.8";
     title.textColor = [UIColor whiteColor];
     title.font = [UIFont boldSystemFontOfSize:14];
     [menuView addSubview:title];
@@ -1204,12 +1475,17 @@ static void CreateFEW1NFloatingUI(void) {
     if (capturedLogs.count > 0) {
         networkLogView.text = [capturedLogs componentsJoinedByString:@"\n--------------------\n"];
     } else {
-        networkLogView.text = @"[+] FEW1N Network Inspector v1.0.7 devrede...\n[+] BaşakPara & newTransaction Mock: AÇIK\n[+] JSON istekleri bekleniyor...";
+        networkLogView.text = @"[+] FEW1N Network Inspector v1.0.8 devrede...\n[+] BaşakPara & newTransaction Mock: AÇIK\n[+] JSON istekleri bekleniyor...";
     }
     [menuView addSubview:networkLogView];
 
-    [keyWindow addSubview:menuView];
-    [keyWindow addSubview:floatingBtn];
+    if (menuView.superview != container) {
+        [menuView removeFromSuperview];
+        [container addSubview:menuView];
+    }
+    [container bringSubviewToFront:menuView];
+    [container bringSubviewToFront:floatingBtn];
+    gOverlayWindow.hidden = NO;
 }
 
 // ----------------------------------------------------------------------------
@@ -1371,6 +1647,26 @@ static void InstallAllHooks(void) {
                               (IMP)few1n_playerView_didChangeToState,
                               "v@:@q");
     }
+
+    // 7. Swizzle UIViewController viewDidAppear: (keeps overlay window on top of camera/modals)
+    SwizzleInstanceMethod([UIViewController class],
+                          @selector(viewDidAppear:),
+                          NSSelectorFromString(@"few1n_orig_viewDidAppear:"),
+                          (IMP)few1n_viewDidAppear,
+                          "v@:B");
+
+    // 8. Swizzle UILabel setText: & setAttributedText: (intercepts 'Ücret bilgisi alınamadı')
+    SwizzleInstanceMethod([UILabel class],
+                          @selector(setText:),
+                          NSSelectorFromString(@"few1n_orig_setText:"),
+                          (IMP)few1n_label_setText,
+                          "v@:@");
+
+    SwizzleInstanceMethod([UILabel class],
+                          @selector(setAttributedText:),
+                          NSSelectorFromString(@"few1n_orig_setAttributedText:"),
+                          (IMP)few1n_label_setAttributedText,
+                          "v@:@");
 }
 
 // ----------------------------------------------------------------------------
@@ -1378,7 +1674,7 @@ static void InstallAllHooks(void) {
 // ----------------------------------------------------------------------------
 __attribute__((constructor))
 static void FEW1NInit(void) {
-    FEW1NLog(@"⚡ FEW1N Basaksehirli Native Mod v1.0.7 yüklendi.");
+    FEW1NLog(@"⚡ FEW1N Basaksehirli Native Mod v1.0.8 yüklendi.");
     InstallAllHooks();
 
     [[NSNotificationCenter defaultCenter] addObserverForName:UIApplicationDidFinishLaunchingNotification
