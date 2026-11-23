@@ -1,5 +1,16 @@
 # Son oturum
 
+## 2026-11-23 03:05 · RyukGram v1.6.0 Profil Analizörü 30000 Patch
+- **Ne yaptık:**
+  1. FEW1N'in yüklediği `zxPluginsInject_v1.6.0.dylib` dosyasının yalnızca sideload/entitlement yönlendiricisi olduğu tespit edildi; asıl Profil Analizörü kodunun `faroukbmiled/RyukGram` v1.6.0 release içindeki `RyukGram.dylib` (arm64, 8.56 MB) içinde bulunduğu belirlendi.
+  2. `RyukGram.dylib` içindeki tüm `13000` takipçi sınırı noktaları analiz edilip `30000` olarak yamalandı:
+     - `0x5dc1f0` (`__TEXT.__const`, `int64_t`): `13000` -> `30000` (`applyFollowerLimitGateFor:`, UI buton/uyarı kilidi ve format string `%ld` değeri)
+     - `0x35321c` (`__TEXT.__text`): `MOVZ w8, #13001` (`0x52865928`) -> `MOVZ w8, #30001` (`0x528ea628`) (analiz motoru arka plan kontrolü)
+  3. Mach-O `LC_CODE_SIGNATURE` CodeDirectory içindeki etkilenen sayfaların (`0x353` ve `0x5dc`) SHA-256 hash'leri güncellendi ve tüm 2075 sayfa hash'i doğrulandı.
+  4. Yamalanmış `RyukGram.dylib` `Few1n-basaksehirli-mod` deposuna yüklendi.
+- **Karar:** Lokalizasyon anahtarı (`13,000` içeren İngilizce cstring) bozulmasın diye dokunulmadı; ekrandaki dinamik `%ld` uyarısı ve tüm engeller doğrudan `0x5dc1f0` + `0x35321c` üzerinden `30000` oldu.
+- **Sonraki adım:** Yamalanmış `RyukGram.dylib`'i IPA / TrollFools içine koyup 19.7K takipçili `@few1n` hesabında Profil Analizörü'nü test etmek.
+
 ## 2026-11-20 03:27 · v1.0.9-custom-popup-interception-and-robust-payload · a717392
 - **Ne yaptık:** 
   1. FEW1N tarafından paylaşılan ekran görüntüsü (`IMG_2177.jpeg`) analiz edildi. Ekranda çıkan popup'ın standart `UIAlertController` olmadığı, özel bir `UIView`/`UIViewController` kartı olduğu ("Ücret bilgisi alınamadı. Lütfen QR kodu tekrar tarayın." + mor "Kapat" butonu) görüldü.
